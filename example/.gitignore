@@ -20,9 +20,5 @@ erl_crash.dump
 *.ez
 
 # Ignore package tarball (built via "mix hex.build").
-flutter_embedder-*.tar
-.dart_tool
-.vscode
-build
-flutter_embedder.h
-*.zip
+example-*.tar
+
