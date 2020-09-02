@@ -14,8 +14,8 @@ LDFLAGS := -L$(PREFIX) -lGLEW -lX11 -lGLU -lGL -lglfw -lflutter_engine
 
 all: $(PREFIX)/flutter_embedder
 
-$(PREFIX)/flutter_embedder: $(PREFIX) embedder.cc $(PREFIX)/libflutter_engine.so $(PREFIX)/icudtl.dat flutter_embedder.h
-	clang++ embedder.cc -std=c++11 ${CFLAGS} ${GLFW_CFLAGS} ${GLEW_CFLAGS} ${LDFLAGS} ${GLEW_LDFLAGS} ${GLFW_LDFLAGS} -o $(PREFIX)/flutter_embedder
+$(PREFIX)/flutter_embedder: $(PREFIX) embedder.c $(PREFIX)/libflutter_engine.so $(PREFIX)/icudtl.dat flutter_embedder.h
+	$(CC) embedder.c ${CFLAGS} ${GLFW_CFLAGS} ${GLEW_CFLAGS} ${LDFLAGS} ${GLEW_LDFLAGS} ${GLFW_LDFLAGS} -o $(PREFIX)/flutter_embedder
 
 $(PREFIX)/libflutter_engine.so flutter_embedder.h: linux-x64-embedder.zip
 	unzip -o linux-x64-embedder.zip

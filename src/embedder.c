@@ -1,15 +1,32 @@
 
 #include <assert.h>
+#include <poll.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <time.h>
 #include "flutter_embedder.h"
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
-#include <chrono>
-#include <iostream>
+
+#define DEBUG
+
+#ifdef DEBUG
+#define log_location stderr
+#define debug(...) do { fprintf(log_location, __VA_ARGS__); fprintf(log_location, "\r\n"); fflush(log_location); } while(0)
+#define error(...) do { debug(__VA_ARGS__); } while (0)
+#else
+#define debug(...)
+#define error(...) do { fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } while(0)
+#endif
 
 // This value is calculated after the window is created.
 static double g_pixelRatio = 1.0;
 static const size_t kInitialWindowWidth = 800;
 static const size_t kInitialWindowHeight = 600;
+
+FlutterEngine engine;
 
 static_assert(FLUTTER_ENGINE_VERSION == 1,
               "This Flutter Embedder was authored against the stable Flutter "
@@ -26,17 +43,12 @@ void GLFWcursorPositionCallbackAtPhase(GLFWwindow* window,
   event.phase = phase;
   event.x = x * g_pixelRatio;
   event.y = y * g_pixelRatio;
-  event.timestamp =
-      std::chrono::duration_cast<std::chrono::microseconds>(
-          std::chrono::high_resolution_clock::now().time_since_epoch())
-          .count();
-  FlutterEngineSendPointerEvent(
-      reinterpret_cast<FlutterEngine>(glfwGetWindowUserPointer(window)), &event,
-      1);
+  event.timestamp = FlutterEngineGetCurrentTime();
+  FlutterEngineSendPointerEvent(glfwGetWindowUserPointer(window), &event, 1);
 }
 
 void GLFWcursorPositionCallback(GLFWwindow* window, double x, double y) {
-  GLFWcursorPositionCallbackAtPhase(window, FlutterPointerPhase::kMove, x, y);
+  GLFWcursorPositionCallbackAtPhase(window, kMove, x, y);
 }
 
 void GLFWmouseButtonCallback(GLFWwindow* window,
@@ -46,15 +58,15 @@ void GLFWmouseButtonCallback(GLFWwindow* window,
   if (key == GLFW_MOUSE_BUTTON_1 && action == GLFW_PRESS) {
     double x, y;
     glfwGetCursorPos(window, &x, &y);
-    GLFWcursorPositionCallbackAtPhase(window, FlutterPointerPhase::kDown, x, y);
+    GLFWcursorPositionCallbackAtPhase(window, kDown, x, y);
     glfwSetCursorPosCallback(window, GLFWcursorPositionCallback);
   }
 
   if (key == GLFW_MOUSE_BUTTON_1 && action == GLFW_RELEASE) {
     double x, y;
     glfwGetCursorPos(window, &x, &y);
-    GLFWcursorPositionCallbackAtPhase(window, FlutterPointerPhase::kUp, x, y);
-    glfwSetCursorPosCallback(window, nullptr);
+    GLFWcursorPositionCallbackAtPhase(window, kUp, x, y);
+    glfwSetCursorPosCallback(window, NULL);
   }
 }
 
@@ -74,9 +86,7 @@ void GLFWwindowSizeCallback(GLFWwindow* window, int width, int height) {
   event.width = width * g_pixelRatio;
   event.height = height * g_pixelRatio;
   event.pixel_ratio = g_pixelRatio;
-  FlutterEngineSendWindowMetricsEvent(
-      reinterpret_cast<FlutterEngine>(glfwGetWindowUserPointer(window)),
-      &event);
+  FlutterEngineSendWindowMetricsEvent(glfwGetWindowUserPointer(window), &event);
 }
 
 static void on_platform_message(
@@ -84,7 +94,7 @@ static void on_platform_message(
 	void* userdata
 ) {
   
-  std::cerr << "platform message" << std::endl;
+  debug("platform message");
   exit(EXIT_FAILURE);
 }
 
@@ -100,28 +110,36 @@ static void on_post_flutter_task(
   return;
 }
 
+static bool make_current(void* userdata) {
+  glfwMakeContextCurrent((GLFWwindow*)userdata);
+  glewInit();
+  return true;
+}
+
+static bool clear_current(void* userdata) {
+  glfwMakeContextCurrent((GLFWwindow*)userdata);
+  return true;
+}
+
+static bool present(void* userdata) {
+  glfwSwapBuffers((GLFWwindow*)userdata);
+  return true;
+}
+
+static uint32_t fbo_callback(void* userdata) {
+  return 0;
+}
+
 bool RunFlutter(GLFWwindow* window,
-                const std::string& project_path,
-                const std::string& icudtl_path) {
+                const char* project_path,
+                const char* icudtl_path) {
   FlutterRendererConfig config = {};
   config.type = kOpenGL;
   config.open_gl.struct_size = sizeof(config.open_gl);
-  config.open_gl.make_current = [](void* userdata) -> bool {
-    glfwMakeContextCurrent((GLFWwindow*)userdata);
-    glewInit();
-    return true;
-  };
-  config.open_gl.clear_current = [](void*) -> bool {
-    glfwMakeContextCurrent(nullptr);  // is this even a thing?
-    return true;
-  };
-  config.open_gl.present = [](void* userdata) -> bool {
-    glfwSwapBuffers((GLFWwindow*)userdata);
-    return true;
-  };
-  config.open_gl.fbo_callback = [](void*) -> uint32_t {
-    return 0;  // FBO0
-  };
+  config.open_gl.make_current = make_current;
+  config.open_gl.clear_current = clear_current;
+  config.open_gl.present = present;
+  config.open_gl.fbo_callback = fbo_callback;
 
   FlutterTaskRunnerDescription custom_task_runner_description = {
     .struct_size = sizeof(FlutterTaskRunnerDescription),
@@ -135,20 +153,15 @@ bool RunFlutter(GLFWwindow* window,
     .platform_task_runner = &custom_task_runner_description
   };
 
-  // This directory is generated by `flutter build bundle`.
-  std::string assets_path = project_path;
   FlutterProjectArgs args = {
       .struct_size = sizeof(FlutterProjectArgs),
-      .assets_path = assets_path.c_str(),
-      .icu_data_path = icudtl_path.c_str(),
+      .assets_path = project_path,
+      .icu_data_path = icudtl_path,
       .platform_message_callback = on_platform_message,
       .custom_task_runners = &custom_task_runners
   };
-  FlutterEngine engine = nullptr;
-  FlutterEngineResult result =
-      FlutterEngineRun(FLUTTER_ENGINE_VERSION, &config,  // renderer
-                       &args, window, &engine);
-  assert(result == kSuccess && engine != nullptr);
+  FlutterEngineResult result = FlutterEngineRun(FLUTTER_ENGINE_VERSION, &config, &args, window, &engine);
+  assert(result == kSuccess && engine != NULL);
 
   glfwSetWindowUserPointer(window, engine);
   GLFWwindowSizeCallback(window, kInitialWindowWidth, kInitialWindowHeight);
@@ -156,14 +169,6 @@ bool RunFlutter(GLFWwindow* window,
   return true;
 }
 
-void printUsage() {
-  std::cerr << "usage: flutter_glfw <path to project> <path to icudtl.dat>"
-            << std::endl;
-}
-
-#include <poll.h>
-#include <string.h>
-#include <unistd.h>
 bool isCallerDown()
 {
   struct pollfd ufd;
@@ -177,19 +182,17 @@ bool isCallerDown()
 
 int main(int argc, const char* argv[]) {
   if (argc != 3) {
-    printUsage();
-    return 1;
+    exit(EXIT_FAILURE);
   }
 
-  std::string project_path = argv[1];
-  std::string icudtl_path = argv[2];
+  const char* project_path = argv[1];
+  const char* icudtl_path = argv[2];
 
   int result = glfwInit();
   assert(result == GLFW_TRUE);
 
-  GLFWwindow* window = glfwCreateWindow(
-      kInitialWindowWidth, kInitialWindowHeight, "Flutter", NULL, NULL);
-  assert(window != nullptr);
+  GLFWwindow* window = glfwCreateWindow(kInitialWindowWidth, kInitialWindowHeight, "Flutter", NULL, NULL);
+  assert(window != NULL);
 
   int framebuffer_width, framebuffer_height;
   glfwGetFramebufferSize(window, &framebuffer_width, &framebuffer_height);
@@ -204,17 +207,6 @@ int main(int argc, const char* argv[]) {
 
   while (!glfwWindowShouldClose(window) && !isCallerDown()) {
     glfwWaitEvents();
-    // int rc = poll(fdset, num_pollfds, -1);
-    // if (rc < 0) {
-    //     // Retry if EINTR
-    //     if (errno == EINTR)
-    //         continue;
-
-    //     fatal("poll failed with %d", errno);
-    // }
-
-    // if (fdset[0].revents & (POLLIN | POLLHUP))
-    //     erlcmd_process(&handler);
   }
 
   glfwDestroyWindow(window);
