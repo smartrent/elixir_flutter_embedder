@@ -6,7 +6,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <time.h>
+#include <errno.h>
 #include "flutter_embedder.h"
+#include "platformchannel.h"
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 
@@ -94,8 +96,15 @@ static void on_platform_message(
 	void* userdata
 ) {
   
-  debug("platform message");
-  exit(EXIT_FAILURE);
+  if(strcmp(message->channel, "platform/idk") == 0) {
+    debug("platform message %s", message->channel);
+    debug("platform message content: %s", (char*)message->message);
+    platch_respond_success_std((const FlutterPlatformMessageResponseHandle*)message->response_handle, &STDINT32(123));
+  }
+  // if(message->channel)
+  // const char* resp = '{"method":"SystemChrome.setSystemUIOverlayStyle","args":{"systemNavigationBarColor":null,"systemNavigationBarDividerColor":null,"statusBarColor":null,"statusBarBrightness":"Brightness.dark","statusBarIconBrightness":"Brightness.light","systemNavigationBarIconBrightness":null}}';
+  // FlutterEngineResult result = FlutterEngineSendPlatformMessageResponse(engine, message->response_handle, message->message, message->message_size);
+  // assert(result == kSuccess);
 }
 
 static bool runs_platform_tasks_on_current_thread(void* userdata) {
@@ -107,6 +116,7 @@ static void on_post_flutter_task(
 	uint64_t target_time,
 	void *userdata
 ) {
+  FlutterEngineRunTask(engine, &task);
   return;
 }
 
