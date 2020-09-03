@@ -20,7 +20,7 @@ defmodule FlutterEmbedder do
             {:args, args},
             :binary,
             :exit_status,
-            {:packet, 2},
+            # {:packet, 2},
             {:env,
              [{'LD_LIBRARY_PATH', to_charlist(Application.app_dir(:flutter_embedder, ["priv"]))}]}
           ])
@@ -40,11 +40,44 @@ defmodule FlutterEmbedder do
     {:stop, {:flutter_embedder_crash, status}, state}
   end
 
+  # hack because packet: 2 isn't working
+  def handle_info(
+        {port, {:data, <<length::16, data::binary-size(length)>>}},
+        %{port: port} = state
+      ) do
+    handle_info({port, {:data, data}}, state)
+  end
+
+  def handle_info(
+        {port,
+         {:data,
+          <<handle::8, channel_length::little-16, channel::binary-size(channel_length),
+            message_length::little-16, message::binary-size(message_length)>>}},
+        %{port: port} = state
+      ) do
+    IO.puts("""
+    New platform message
+    handle: #{handle}
+    channel: #{channel}
+    message: #{inspect(message, limit: :infinity)}
+    """)
+
+    try do
+      FlutterEmbedder.StandardCallCodec.decode_method(message)
+      |> IO.inspect(label: "StandardCallCodec")
+    catch
+      _, _ ->
+        :ok
+    end
+
+    # Port.command(port, <<0x0::8, handle::8, >>)
+    {:noreply, state}
+  end
+
   def handle_info({port, {:data, data}}, %{port: port} = state) do
     IO.inspect(data, label: "UNHANDLED DATA")
     {:noreply, state}
   end
-
 
   # TODO Check for errors instead of raising
   defp sanity_check([flutter_assets]) do

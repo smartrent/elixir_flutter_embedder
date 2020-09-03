@@ -942,6 +942,7 @@ int platch_encode(struct platch_obj *object, uint8_t **buffer_out, size_t *size_
 	}
 
 	if (!(buffer = malloc(size))) return ENOMEM;
+	memset(buffer, 0, size);
 	buffer_cursor = buffer;
 	
 	switch (object->codec) {
@@ -1093,6 +1094,68 @@ int platch_call_json(char *channel, char *method, struct json_value *argument, p
 								userdata);
 }
 
+
+void hexDump (const char * desc, const void * addr, const int len) {
+    int i;
+    unsigned char buff[17];
+    const unsigned char * pc = (const unsigned char *)addr;
+
+    // Output description if given.
+
+    if (desc != NULL)
+        fprintf (stderr, "%s:\r\n", desc);
+
+    // Length checks.
+
+    if (len == 0) {
+        fprintf(stderr,   "ZERO LENGTH\r\n");
+        return;
+    }
+    else if (len < 0) {
+        fprintf(stderr,   "NEGATIVE LENGTH: %d\r\n", len);
+        return;
+    }
+
+    // Process every byte in the data.
+
+    for (i = 0; i < len; i++) {
+        // Multiple of 16 means new line (with line offset).
+
+        if ((i % 16) == 0) {
+            // Don't print ASCII buffer for the "zeroth" line.
+
+            if (i != 0)
+                fprintf (stderr, "  %s\r\n", buff);
+
+            // Output the offset.
+
+            fprintf (stderr, "  %04x ", i);
+        }
+
+        // Now the hex code for the specific character.
+        fprintf (stderr, " %02x", pc[i]);
+
+        // And buffer a printable ASCII character for later.
+
+        if ((pc[i] < 0x20) || (pc[i] > 0x7e)) // isprint() may be better.
+            buff[i % 16] = '.';
+        else
+            buff[i % 16] = pc[i];
+        buff[(i % 16) + 1] = '\0';
+    }
+
+    // Pad out last line if not exactly 16 characters.
+
+    while ((i % 16) != 0) {
+        fprintf (stderr, "   ");
+        i++;
+    }
+
+    // And print the final ASCII buffer.
+
+    fprintf (stderr, "  %s\r\n", buff);
+}
+
 int platch_respond(FlutterPlatformMessageResponseHandle *handle, struct platch_obj *response) {
 	FlutterEngineResult result;
 	uint8_t *buffer = NULL;
@@ -1102,6 +1165,8 @@ int platch_respond(FlutterPlatformMessageResponseHandle *handle, struct platch_o
 	ok = platch_encode(response, &buffer, &size);
 	if (ok != 0) return ok;
 
+	
+	hexDump("output", buffer, size);
 	result = FlutterEngineSendPlatformMessageResponse(engine, (const FlutterPlatformMessageResponseHandle*) handle, (const uint8_t*) buffer, size);
 	
 	if (buffer != NULL) free(buffer);
