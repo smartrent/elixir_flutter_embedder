@@ -48,34 +48,15 @@ defmodule FlutterEmbedder do
     handle_info({port, {:data, data}}, state)
   end
 
-  def handle_info(
-        {port,
-         {:data,
-          <<handle::8, channel_length::little-16, channel::binary-size(channel_length),
-            message_length::little-16, message::binary-size(message_length)>>}},
-        %{port: port} = state
-      ) do
-    IO.puts("""
-    New platform message
-    handle: #{handle}
-    channel: #{channel}
-    message: #{inspect(message, limit: :infinity)}
-    """)
-
+  def handle_info({port, {:data, data}}, %{port: port} = state) do
     try do
-      FlutterEmbedder.StandardCallCodec.decode_method(message)
-      |> IO.inspect(label: "StandardCallCodec")
+      FlutterEmbedder.StandardCall.decode(data)
+      |> IO.inspect(label: "StandardCall")
     catch
       _, _ ->
         :ok
     end
 
-    # Port.command(port, <<0x0::8, handle::8, >>)
-    {:noreply, state}
-  end
-
-  def handle_info({port, {:data, data}}, %{port: port} = state) do
-    IO.inspect(data, label: "UNHANDLED DATA")
     {:noreply, state}
   end
 

@@ -67,20 +67,7 @@ class _MyHomePageState extends State<MyHomePage> {
     });
 
     try {
-      // platform.invokeListMethod('abcdef', [
-      //   null,
-      //   true,
-      //   false,
-      //   0x7FFFFFFF,
-      //   0x7FFFFFFFFFFFFFFF,
-      //   100.0,
-      //   "abc",
-      //   ["def", "abc", 0x123, null, true, false]
-      // ]);
-      Uint8List bytes = Uint8List.fromList([1, 2, 3]);
-      String args =
-          "hello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, worldhello, world";
-      await platform.invokeMethod('getBatteryLevel', args);
+      await platform.invokeMethod('getBatteryLevel', ["list", "arg"]);
       // batteryLevel = 'Battery level at $result % .';
     } on PlatformException catch (e) {
       batteryLevel = "Failed to get battery level: '${e.message}'.";

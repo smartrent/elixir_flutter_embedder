@@ -14,13 +14,6 @@ defmodule FlutterEmbedder.StandardCallCodec do
   @kStdList 12
   @kStdMap 13
 
-  def decode_method(
-        <<@kStdString, method_length::8, method::binary-size(method_length), arguments::binary>>
-      ) do
-    {arguments, ""} = decode_value(arguments)
-    %{method: method, arguments: arguments}
-  end
-
   def decode_value(<<@kStdMap, num_pairs::8, map::binary>>) do
     decode_map(num_pairs, map, %{})
   end
@@ -45,8 +38,15 @@ defmodule FlutterEmbedder.StandardCallCodec do
     decode_uint8_list(num_items, uint8_list, [])
   end
 
-  def decode_value(<<@kStdString, length::8, string::binary-size(length), rest::binary>>),
-    do: {string, rest}
+  def decode_value(<<@kStdString, length::8, string::binary-size(length), rest::binary>>)
+      when length < 254,
+      do: {string, rest}
+
+  def decode_value(<<@kStdString, base, add, mult, string::binary>>) do
+    strlen = (base + (256 - base)) * mult + add
+    <<string::binary-size(strlen), rest::binary>> = string
+    {string, rest}
+  end
 
   def decode_value(<<@kStdFloat64, float::96, rest::binary>>), do: {float, rest}
   def decode_value(<<@kStdInt64, int64::signed-native-64, rest::binary>>), do: {int64, rest}
@@ -85,10 +85,11 @@ defmodule FlutterEmbedder.StandardCallCodec do
 
   def decode_map(
         num_pairs,
-        <<@kStdString, key_length::8, key::binary-size(key_length), value::binary>>,
+        <<@kStdString, _::binary>> = map,
         acc
       ) do
-    {value, rest} = decode_value(value)
+    {key, rest} = decode_value(map)
+    {value, rest} = decode_value(rest)
     decode_map(num_pairs, rest, Map.put(acc, key, value))
   end
 
