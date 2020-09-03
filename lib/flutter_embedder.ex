@@ -4,7 +4,11 @@ defmodule FlutterEmbedder do
   use GenServer
 
   def start_link(flutter_assets) do
-    GenServer.start_link(__MODULE__, [flutter_assets])
+    GenServer.start_link(__MODULE__, [flutter_assets], name: __MODULE__)
+  end
+
+  def send_packet(packet) do
+    GenServer.cast(__MODULE__, {:send_packet, packet})
   end
 
   @impl GenServer
@@ -16,7 +20,7 @@ defmodule FlutterEmbedder do
             {:args, args},
             :binary,
             :exit_status,
-            {:packet, 4},
+            {:packet, 2},
             {:env,
              [{'LD_LIBRARY_PATH', to_charlist(Application.app_dir(:flutter_embedder, ["priv"]))}]}
           ])
@@ -26,9 +30,21 @@ defmodule FlutterEmbedder do
   end
 
   @impl GenServer
+  def handle_cast({:send_packet, packet}, %{port: port} = state) do
+    Port.command(port, packet)
+    {:noreply, state}
+  end
+
+  @impl GenServer
   def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
     {:stop, {:flutter_embedder_crash, status}, state}
   end
+
+  def handle_info({port, {:data, data}}, %{port: port} = state) do
+    IO.inspect(data, label: "UNHANDLED DATA")
+    {:noreply, state}
+  end
+
 
   # TODO Check for errors instead of raising
   defp sanity_check([flutter_assets]) do

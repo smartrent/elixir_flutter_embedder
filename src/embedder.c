@@ -1,16 +1,22 @@
 
 #include <assert.h>
 #include <poll.h>
+#include <sys/eventfd.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
-#include "flutter_embedder.h"
-#include "platformchannel.h"
+#include <pthread.h>
+
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+
+#include "erlcmd.h"
+
+#include "flutter_embedder.h"
+#include "platformchannel.h"
 
 #define DEBUG
 
@@ -27,8 +33,12 @@
 static double g_pixelRatio = 1.0;
 static const size_t kInitialWindowWidth = 800;
 static const size_t kInitialWindowHeight = 600;
-
 FlutterEngine engine;
+
+#define NUM_POLLFD_ENTRIES 32
+static struct erlcmd handler;
+static struct pollfd fdset[NUM_POLLFD_ENTRIES];
+static int num_pollfds = 0;
 
 static_assert(FLUTTER_ENGINE_VERSION == 1,
               "This Flutter Embedder was authored against the stable Flutter "
@@ -95,16 +105,21 @@ static void on_platform_message(
 	const FlutterPlatformMessage* message,
 	void* userdata
 ) {
-  
-  if(strcmp(message->channel, "platform/idk") == 0) {
-    debug("platform message %s", message->channel);
-    debug("platform message content: %s", (char*)message->message);
-    platch_respond_success_std((const FlutterPlatformMessageResponseHandle*)message->response_handle, &STDINT32(123));
-  }
-  // if(message->channel)
-  // const char* resp = '{"method":"SystemChrome.setSystemUIOverlayStyle","args":{"systemNavigationBarColor":null,"systemNavigationBarDividerColor":null,"statusBarColor":null,"statusBarBrightness":"Brightness.dark","statusBarIconBrightness":"Brightness.light","systemNavigationBarIconBrightness":null}}';
-  // FlutterEngineResult result = FlutterEngineSendPlatformMessageResponse(engine, message->response_handle, message->message, message->message_size);
-  // assert(result == kSuccess);
+
+  eventfd_write(fdset[1].fd, 1);
+
+  // if(strcmp(message->channel, "platform/idk") == 0) {
+  //   uint16_t channel_length = strlen(message->channel);
+  //   size_t buffer_size = 2 + 2 + channel_length + message->message_size;
+  //   // uint8_t* buffer = malloc(buffer_size);
+  //   debug("platform message channel(%lu): %s content(%lu): %s", channel_length, message->channel, message->message_size, message->message);
+  //   debug("erlcmd buffer size: %lu", buffer_size);
+  //   // memcpy(&buffer[2], (void*)&channel_length, 2);
+  //   // memcpy(&buffer[4], message->channel, channel_length);
+  //   // memcpy(&buffer[4 + channel_length], message->message, message->message_size);
+  //   // erlcmd_send(buffer, buffer_size);
+  // //   platch_respond_success_std((const FlutterPlatformMessageResponseHandle*)message->response_handle, &STDINT32(123));
+  // }
 }
 
 static bool runs_platform_tasks_on_current_thread(void* userdata) {
@@ -190,6 +205,38 @@ bool isCallerDown()
   return ufd.revents & POLLHUP;
 }
 
+static void handle_from_elixir(const uint8_t *buffer, size_t length, void *cookie) {
+  debug("handle_from_elixir: len=%lu, event=%u", length, buffer[2]);
+}
+
+void *myThreadFun(void *vargp)
+{
+  for(;;) {
+      for (int i = 0; i < num_pollfds; i++)
+          fdset[i].revents = 0;
+      int rc = poll(fdset, num_pollfds, 0);
+      if (rc < 0) {
+          // Retry if EINTR
+          if (errno == EINTR)
+              continue;
+
+          error("poll failed with %d", errno);
+
+      }
+
+      if (fdset[0].revents & (POLLIN | POLLHUP))
+          erlcmd_process(&handler);
+
+      if (fdset[1].revents & (POLLIN | POLLHUP)) {
+          eventfd_t event;
+          eventfd_read(fdset[1].fd, &event);
+          debug("why won't this packet go thru??????");
+          uint8_t buffer[4] = {0, 0, 'a', 'b'};
+          erlcmd_send(buffer, 4);
+      }
+  }
+}
+
 int main(int argc, const char* argv[]) {
   if (argc != 3) {
     exit(EXIT_FAILURE);
@@ -197,6 +244,20 @@ int main(int argc, const char* argv[]) {
 
   const char* project_path = argv[1];
   const char* icudtl_path = argv[2];
+
+  erlcmd_init(&handler, handle_from_elixir, NULL);
+
+  // Initialize the file descriptor set for polling
+  memset(fdset, -1, sizeof(fdset));
+  fdset[0].fd = STDIN_FILENO;
+  fdset[0].events = POLLIN;
+  fdset[0].revents = 0;
+
+  fdset[1].fd = eventfd(0, 0);
+  fdset[1].events = POLLIN;
+  fdset[1].revents = 0;
+
+  num_pollfds = 2;
 
   int result = glfwInit();
   assert(result == GLFW_TRUE);
@@ -215,10 +276,15 @@ int main(int argc, const char* argv[]) {
   glfwSetWindowSizeCallback(window, GLFWwindowSizeCallback);
   glfwSetMouseButtonCallback(window, GLFWmouseButtonCallback);
 
+  pthread_t thread_id;
+  pthread_create(&thread_id, NULL, myThreadFun, NULL);
+
   while (!glfwWindowShouldClose(window) && !isCallerDown()) {
-    glfwWaitEvents();
+    glfwWaitEventsTimeout(0.1);
+    // glfwWaitEvents();
   }
 
+  pthread_join(thread_id, NULL);
   glfwDestroyWindow(window);
   glfwTerminate();
 

@@ -2,7 +2,7 @@ PREFIX = $(MIX_APP_PATH)/priv
 BUILD  = $(MIX_APP_PATH)/obj
 
 CFLAGS := -I/usr/include/GLFW/ -I/usr/include/GL/
-LDFLAGS := -L$(PREFIX) -lGLEW -lX11 -lGLU -lGL -lglfw -lflutter_engine
+LDFLAGS := -L$(PREFIX) -lGLEW -lX11 -lGLU -lGL -lglfw -lflutter_engine -lpthread
 
 # LDFLAGS += -L $(PREFIX) -lflutter_engine
 
@@ -14,8 +14,8 @@ LDFLAGS := -L$(PREFIX) -lGLEW -lX11 -lGLU -lGL -lglfw -lflutter_engine
 
 all: $(PREFIX)/flutter_embedder
 
-$(PREFIX)/flutter_embedder: $(PREFIX) embedder.c $(PREFIX)/libflutter_engine.so $(PREFIX)/icudtl.dat flutter_embedder.h
-	$(CC) embedder.c platformchannel.c ${CFLAGS} ${GLFW_CFLAGS} ${GLEW_CFLAGS} ${LDFLAGS} ${GLEW_LDFLAGS} ${GLFW_LDFLAGS} -o $(PREFIX)/flutter_embedder
+$(PREFIX)/flutter_embedder: $(PREFIX) embedder.c platformchannel.c erlcmd.c $(PREFIX)/libflutter_engine.so $(PREFIX)/icudtl.dat flutter_embedder.h
+	$(CC) embedder.c platformchannel.c erlcmd.c ${CFLAGS} ${GLFW_CFLAGS} ${GLEW_CFLAGS} ${LDFLAGS} ${GLEW_LDFLAGS} ${GLFW_LDFLAGS} -o $(PREFIX)/flutter_embedder
 
 $(PREFIX)/libflutter_engine.so flutter_embedder.h: linux-x64-embedder.zip
 	unzip -o linux-x64-embedder.zip
