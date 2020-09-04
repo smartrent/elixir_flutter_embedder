@@ -1,20 +1,27 @@
 defmodule FlutterEmbedder do
-  alias FlutterEmbedder.{PlatformChannelMessage, StandardMessageCodec, StandardCall}
-  defstruct [:port]
+  alias FlutterEmbedder.{PlatformChannelMessage, StandardMessageCodec, StandardMethodCall}
+  import StandardMessageCodec, only: [is_valid_dart_value: 1]
+  defstruct [:port, :module]
 
   require Logger
-  use GenServer
+  use GenServer, child_spec: false
 
-  def start_link(flutter_assets) do
-    GenServer.start_link(__MODULE__, [flutter_assets], name: __MODULE__)
+  def child_spec(opts) do
+    %{
+      id: __MODULE__,
+      start: {__MODULE__, :start_link, opts},
+      type: :worker,
+      restart: :permanent,
+      shutdown: 500
+    }
   end
 
-  def send_packet(packet) do
-    GenServer.cast(__MODULE__, {:send_packet, packet})
+  def start_link(standard_method_call_handler, flutter_assets, opts \\ []) do
+    GenServer.start_link(__MODULE__, [standard_method_call_handler, flutter_assets], opts)
   end
 
   @impl GenServer
-  def init(args) do
+  def init([module | args]) do
     case sanity_check(args) do
       {:ok, args} ->
         port =
@@ -28,14 +35,8 @@ defmodule FlutterEmbedder do
              [{'LD_LIBRARY_PATH', to_charlist(Application.app_dir(:flutter_embedder, ["priv"]))}]}
           ])
 
-        {:ok, %__MODULE__{port: port}}
+        {:ok, %__MODULE__{module: module, port: port}}
     end
-  end
-
-  @impl GenServer
-  def handle_cast({:send_packet, packet}, %{port: port} = state) do
-    Port.command(port, packet)
-    {:noreply, state}
   end
 
   @impl GenServer
@@ -44,33 +45,47 @@ defmodule FlutterEmbedder do
   end
 
   def handle_info({port, {:data, data}}, %{port: port} = state) do
-    case Jason.decode(data) do
-      {:ok, json} ->
-        Logger.error("not sure how to handle json yet... value: #{inspect(json, pretty: true)}")
+    platform_channel_message = PlatformChannelMessage.decode(data)
+
+    case StandardMethodCall.decode(platform_channel_message) do
+      {:ok, call} ->
+        handle_standard_call(platform_channel_message, call, state)
+
+      {:error, reason} ->
+        Logger.error("Could not decode data as StandardMethodCall: #{reason}")
+
+        reply_bin =
+          PlatformChannelMessage.encode_response(platform_channel_message, :not_implemented)
+
+        true = Port.command(state.port, reply_bin)
         {:noreply, state}
-
-      {:error, _} ->
-        platform_channel_message = PlatformChannelMessage.decode(data)
-
-        case StandardCall.decode(platform_channel_message) do
-          {:ok, call} ->
-            handle_standard_call(%{platform_channel_message | message: call}, state)
-
-          {:error, reason} ->
-            Logger.error("Could not decode data as StandardCall: #{reason}")
-            {:noreply, state}
-        end
     end
   end
 
-  def handle_standard_call(call, state) do
-    Logger.info("call: #{inspect(call)}")
+  def handle_standard_call(
+        %PlatformChannelMessage{channel: channel} = call,
+        %StandardMethodCall{method: method, args: args},
+        state
+      ) do
+    case state.module.handle_std_call(channel, method, args) do
+      {:ok, value} when is_valid_dart_value(value) ->
+        value_ = StandardMessageCodec.encode_value(value)
+        reply_bin = PlatformChannelMessage.encode_response(call, {:ok, value_})
+        true = Port.command(state.port, reply_bin)
 
-    if call.channel == "platform/idk" do
-      Logger.info("replying")
-      value = StandardMessageCodec.encode_value(100.0)
-      reply_bin = PlatformChannelMessage.encode_response(call, {:ok, value})
-      true = Port.command(state.port, reply_bin)
+      {:error, code, message, value} ->
+        code_ = StandardMessageCodec.encode_value(code)
+        message_ = StandardMessageCodec.encode_value(message)
+        value_ = StandardMessageCodec.encode_value(value)
+
+        reply_bin =
+          PlatformChannelMessage.encode_response(call, {:error, code_ <> message_ <> value_})
+
+        true = Port.command(state.port, reply_bin)
+
+      :not_implemented ->
+        reply_bin = PlatformChannelMessage.encode_response(call, :not_implemented)
+        true = Port.command(state.port, reply_bin)
     end
 
     {:noreply, state}

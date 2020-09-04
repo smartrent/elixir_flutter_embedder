@@ -101,6 +101,8 @@ void GLFWwindowSizeCallback(GLFWwindow* window, int width, int height) {
   FlutterEngineSendWindowMetricsEvent(glfwGetWindowUserPointer(window), &event);
 }
 
+size_t erlcmd_uid = 1;
+
 typedef struct erlcmd_platform_message {
   const FlutterPlatformMessageResponseHandle* response_handle;
   uint8_t erlcmd_handle;
@@ -123,65 +125,45 @@ static void on_platform_message(
   pthread_mutex_lock(&lock);
   uint16_t channel_length = strlen(message->channel);
   if(head) {
-    // debug("adding node");
     erlcmd_platform_message_t* current = head;
     while (current->next != NULL) {
       current = current->next;
     }
 
     current->next = malloc(sizeof(erlcmd_platform_message_t));
+    memset(current->next, 0, sizeof(erlcmd_platform_message_t));
+
     if(!current->next)
       exit(EXIT_FAILURE);
 
     current->next->next = NULL;
     current->next->dispatched = false;
-    current->next->erlcmd_handle = current->erlcmd_handle + 1;
+    current->next->erlcmd_handle = erlcmd_uid++;
     current->next->response_handle = message->response_handle;
     current->next->channel = message->channel;
     current->next->channel_length = channel_length;
     current->next->message = message->message;
     current->next->message_length = message->message_size;
+    debug("adding node %lu -> %lu", current->erlcmd_handle, current->next->erlcmd_handle);
 
   } else {
-    // debug("Creating head node");
     head = malloc(sizeof(erlcmd_platform_message_t));
+    memset(head, 0, sizeof(erlcmd_platform_message_t));
     if(!head)
       exit(EXIT_FAILURE);
     head->next = NULL;
     head->dispatched = false;
-    head->erlcmd_handle = 1;
+    head->erlcmd_handle = erlcmd_uid++;
     head->response_handle = message->response_handle;
     head->channel = message->channel;
     head->channel_length = channel_length;
     head->message = message->message;
     head->message_length = message->message_size;
   }
+  debug("Creating head node %lu", head->erlcmd_handle);
 
   pthread_mutex_unlock(&lock);
   eventfd_write(fdset[1].fd, 1);
-
-  if(strcmp(message->channel, "platform/idk") == 0) {
-  //   uint16_t channel_length = strlen(message->channel);
-  //   size_t buffer_size =2 + 2 + channel_length + message->message_size;
-  //   debug("platform message channel(%lu): %s content(%lu): %s", channel_length, message->channel, message->message_size, message->message);
-  //   debug("erlcmd buffer size: %lu", buffer_size);
-  //   uint8_t* buffer = malloc(buffer_size);
-  //   memcpy(&buffer[2], (void*)&channel_length, 2);
-  //   memcpy(&buffer[4], message->channel, channel_length);
-  //   memcpy(&buffer[4 + channel_length], message->message, message->message_size);
-  //   // erlcmd_send(buffer, buffer_size);
-
-    // platch_respond_success_std((const FlutterPlatformMessageResponseHandle*)message->response_handle, &STDFLOAT64(100.0));
-    // platch_respond_error_std(
-    //         (const FlutterPlatformMessageResponseHandle*)message->response_handle,
-    //         "notsupported",
-    //         "The vehicle doesn't support the PID used for this channel.",
-    //         NULL
-    //     );
-
-    // 256 char string
-    // platch_respond_success_std((const FlutterPlatformMessageResponseHandle*)message->response_handle, &STDSTRING("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
-  }
 }
 
 static bool runs_platform_tasks_on_current_thread(void* userdata) {

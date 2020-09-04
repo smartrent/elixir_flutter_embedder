@@ -1,10 +1,12 @@
-defmodule FlutterEmbedder.StandardCall do
+defmodule FlutterEmbedder.StandardMethodCall do
   alias FlutterEmbedder.{StandardMessageCodec, PlatformChannelMessage}
   defstruct [:method, :args]
 
+  @type method :: StandardMessageCodec.dart_string()
+  @type args :: StandardMessageCodec.t()
   @type t :: %__MODULE__{
-          method: StandardMessageCodec.dart_string(),
-          args: StandardMessageCodec.value()
+          method: method(),
+          args: args()
         }
 
   @spec decode(PlatformChannelMessage.t()) :: {:ok, t()} | {:error, String.t()}

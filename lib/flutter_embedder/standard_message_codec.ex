@@ -20,7 +20,8 @@ defmodule FlutterEmbedder.StandardMessageCodec do
   @type int32() :: integer()
   @type float64() :: float()
   @type dart_string() :: binary()
-  @type value :: dart_string() | float64() | int32() | int64() | dart_map() | dynamic_list()
+  @type value :: t()
+  @type t() :: dart_string() | float64() | int32() | int64() | dart_map() | dynamic_list()
 
   defmodule DecodeError do
     defexception [:message]
