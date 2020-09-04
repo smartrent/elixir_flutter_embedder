@@ -25,7 +25,8 @@ defmodule FlutterEmbedder.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:elixir_make, "~> 0.6.0", runtime: false}
+      {:elixir_make, "~> 0.6.0", runtime: false},
+      {:jason, "~> 1.2"}
     ]
   end
 end

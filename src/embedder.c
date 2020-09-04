@@ -172,12 +172,12 @@ static void on_platform_message(
   //   // erlcmd_send(buffer, buffer_size);
 
     // platch_respond_success_std((const FlutterPlatformMessageResponseHandle*)message->response_handle, &STDFLOAT64(100.0));
-    // platch_respond_error_std(
-    //         (const FlutterPlatformMessageResponseHandle*)message->response_handle,
-    //         "notsupported",
-    //         "The vehicle doesn't support the PID used for this channel.",
-    //         NULL
-    //     );
+    platch_respond_error_std(
+            (const FlutterPlatformMessageResponseHandle*)message->response_handle,
+            "notsupported",
+            "The vehicle doesn't support the PID used for this channel.",
+            NULL
+        );
 
     // 256 char string
     // platch_respond_success_std((const FlutterPlatformMessageResponseHandle*)message->response_handle, &STDSTRING("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
@@ -268,11 +268,10 @@ bool isCallerDown()
 }
 
 static void handle_from_elixir(const uint8_t *buffer, size_t length, void *cookie) {
-  debug("handle_from_elixir: len=%lu, event=%u", length, buffer[2]);
+  debug("handle_from_elixir: len=%lu, handle=%u", length, buffer[2]);
   erlcmd_platform_message_t* previous = head;
   erlcmd_platform_message_t* current = head;
   while(current) {
-    debug("checking");
     if(current->erlcmd_handle == buffer[2]) {
       debug("responding to %lu", current->erlcmd_handle);
       FlutterEngineSendPlatformMessageResponse(engine, (const FlutterPlatformMessageResponseHandle*)current->response_handle, &buffer[3], length - sizeof(uint8_t));

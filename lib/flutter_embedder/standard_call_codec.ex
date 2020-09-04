@@ -14,27 +14,61 @@ defmodule FlutterEmbedder.StandardCallCodec do
   @kStdList 12
   @kStdMap 13
 
-  def encode_value(nil), do: <<0>>
-  def encode_value(true), do: <<1>>
-  def encode_value(false), do: <<2>>
-  def encode_value(int32) when abs(int32) <= 0x7FFFFFFF, do: <<3, int32::signed-native-32>>
+  @doc "Checks if a value can be encoded into a Dart value"
+  defguard is_valid_dart_value(value)
+           when is_binary(value) or
+                  is_integer(value) or
+                  is_float(value) or
+                  is_boolean(value) or
+                  is_map(value) or
+                  is_list(value)
 
-  def encode_value(int64) when abs(int64) <= 0x7FFFFFFFFFFFFFFF,
-    do: <<3, int64::signed-native-64>>
+  def encode_value(nil), do: <<@kStdNull>>
+  def encode_value(true), do: <<@kStdTrue>>
+  def encode_value(false), do: <<@kStdFalse>>
+
+  def encode_value(int32) when is_integer(int32) and abs(int32) <= 0x7FFFFFFF,
+    do: <<@kStdInt32, int32::signed-native-32>>
+
+  def encode_value(int64) when is_integer(int64) and abs(int64) <= 0x7FFFFFFFFFFFFFFF,
+    do: <<@kStdInt64, int64::signed-native-64>>
 
   def encode_value(float64) when is_float(float64),
-    do: <<6, 0::32, float64::signed-native-float-64>>
+    do: <<@kStdFloat64, 0::6*8, float64::signed-native-float-64>>
 
   def encode_value(string) when is_binary(string) and byte_size(string) < 254 do
-    <<7, byte_size(string)::8, string::binary>>
+    <<@kStdString, byte_size(string)::8, string::binary>>
   end
 
-  def encode_value(%{} = _map) do
-    raise("nope")
+  def encode_value(string) when is_binary(string) and byte_size(string) < 0xFFFF do
+    <<@kStdString, 254, byte_size(string)::native-16, string::binary>>
   end
 
+  # TODO encode @kStdUInt8Array, @kStdInt32Array, @kStdInt64Array, @kStdFloat64Array
   def encode_value(value) when is_list(value) do
-    raise("nope")
+    acc = <<@kStdList, length(value)::8>>
+
+    Enum.reduce(value, acc, fn
+      value, acc when is_valid_dart_value(value) ->
+        acc <> encode_value(value)
+
+      _invalid, _acc ->
+        raise ArgumentError
+    end)
+  end
+
+  # i don't think Dart actually allows for maps as return values via PlatformChannel
+  def encode_value(%{} = map) do
+    acc = <<@kStdMap, map_size(map)::8>>
+
+    Enum.reduce(map, acc, fn
+      # Dart only allows string keys
+      {key, value}, acc when is_binary(key) and is_valid_dart_value(value) ->
+        acc <> encode_value(key) <> encode_value(value)
+
+      {_key, _value}, _acc ->
+        raise ArgumentError
+    end)
   end
 
   def decode_value(<<@kStdMap, num_pairs::8, map::binary>>) do
@@ -61,17 +95,17 @@ defmodule FlutterEmbedder.StandardCallCodec do
     decode_uint8_list(num_items, uint8_list, [])
   end
 
-  def decode_value(<<@kStdString, length::8, string::binary-size(length), rest::binary>>)
-      when length < 254,
+  def decode_value(
+        <<@kStdString, 254, length::native-16, string::binary-size(length), rest::binary>>
+      ),
       do: {string, rest}
 
-  def decode_value(<<@kStdString, base, add, mult, string::binary>>) do
-    strlen = (base + (256 - base)) * mult + add
-    <<string::binary-size(strlen), rest::binary>> = string
-    {string, rest}
-  end
+  def decode_value(<<@kStdString, length::8, string::binary-size(length), rest::binary>>),
+    do: {string, rest}
 
-  def decode_value(<<@kStdFloat64, float::96, rest::binary>>), do: {float, rest}
+  def decode_value(<<@kStdFloat64, _pad::6*8, float64::signed-native-float-64, rest::binary>>),
+    do: {float64, rest}
+
   def decode_value(<<@kStdInt64, int64::signed-native-64, rest::binary>>), do: {int64, rest}
   def decode_value(<<@kStdInt32, int32::signed-native-32, rest::binary>>), do: {int32, rest}
   def decode_value(<<@kStdFalse, rest::binary>>), do: {false, rest}
