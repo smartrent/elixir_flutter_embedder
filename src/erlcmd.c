@@ -59,7 +59,7 @@ void erlcmd_send(uint8_t *response, size_t len)
 
     size_t wrote = 0;
     do {
-        ssize_t amount_written = write(STDOUT_FILENO, response + wrote, len - wrote);
+        ssize_t amount_written = write(ERLCMD_WRITE_FD, response + wrote, len - wrote);
         if (amount_written < 0) {
             if (errno == EINTR)
                 continue;
@@ -101,7 +101,7 @@ static size_t erlcmd_try_dispatch(struct erlcmd *handler)
  */
 void erlcmd_process(struct erlcmd *handler)
 {
-    ssize_t amount_read = read(STDIN_FILENO, handler->buffer + handler->index,
+    ssize_t amount_read = read(ERLCMD_READ_FD, handler->buffer + handler->index,
                                sizeof(handler->buffer) - handler->index);
     if (amount_read < 0) {
         /* EINTR is ok to get, since we were interrupted by a signal. */

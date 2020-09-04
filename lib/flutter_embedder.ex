@@ -1,6 +1,8 @@
 defmodule FlutterEmbedder do
+  alias FlutterEmbedder.{PlatformChannelMessage, StandardMessageCodec, StandardCall}
   defstruct [:port]
 
+  require Logger
   use GenServer
 
   def start_link(flutter_assets) do
@@ -20,7 +22,8 @@ defmodule FlutterEmbedder do
             {:args, args},
             :binary,
             :exit_status,
-            # {:packet, 2},
+            {:packet, 2},
+            :nouse_stdio,
             {:env,
              [{'LD_LIBRARY_PATH', to_charlist(Application.app_dir(:flutter_embedder, ["priv"]))}]}
           ])
@@ -40,32 +43,34 @@ defmodule FlutterEmbedder do
     {:stop, {:flutter_embedder_crash, status}, state}
   end
 
-  # hack because packet: 2 isn't working
-  def handle_info(
-        {port, {:data, <<length::16, data::binary-size(length)>>}},
-        %{port: port} = state
-      ) do
-    handle_info({port, {:data, data}}, state)
-  end
-
   def handle_info({port, {:data, data}}, %{port: port} = state) do
     case Jason.decode(data) do
       {:ok, json} ->
-        IO.inspect(json, label: "not sure how to handle json yet...")
+        Logger.error("not sure how to handle json yet... value: #{inspect(json, pretty: true)}")
         {:noreply, state}
 
       {:error, _} ->
-        call = FlutterEmbedder.StandardCall.decode(data)
-        handle_standard_call(call, state)
+        platform_channel_message = PlatformChannelMessage.decode(data)
+
+        case StandardCall.decode(platform_channel_message) do
+          {:ok, call} ->
+            handle_standard_call(%{platform_channel_message | message: call}, state)
+
+          {:error, reason} ->
+            Logger.error("Could not decode data as StandardCall: #{reason}")
+            {:noreply, state}
+        end
     end
   end
 
   def handle_standard_call(call, state) do
+    Logger.info("call: #{inspect(call)}")
+
     if call.channel == "platform/idk" do
-      reply = 105.69
-      value_bin = FlutterEmbedder.StandardCallCodec.encode_value(reply)
-      reply_bin = <<call.handle::8, 0, value_bin::binary>>
-      true = Port.command(state.port, <<byte_size(reply_bin)::16, reply_bin::binary>>)
+      Logger.info("replying")
+      value = StandardMessageCodec.encode_value(100.0)
+      reply_bin = PlatformChannelMessage.encode_response(call, {:ok, value})
+      true = Port.command(state.port, reply_bin)
     end
 
     {:noreply, state}
@@ -82,8 +87,4 @@ defmodule FlutterEmbedder do
   defp port_executable() do
     Application.app_dir(:flutter_embedder, ["priv", "flutter_embedder"])
   end
-
-  # defp engine_executable() do
-  #   Application.app_dir(:flutter_embedder, ["priv", "libflutter_engine.so"])
-  # end
 end

@@ -22,6 +22,9 @@
 #include <stdlib.h>
 #include <stdint.h>
 
+#define ERLCMD_WRITE_FD 4
+#define ERLCMD_READ_FD 3
+
 /*
  * Erlang request/response processing
  *

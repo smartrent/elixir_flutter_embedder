@@ -1,21 +1,30 @@
 defmodule FlutterEmbedder.StandardCall do
-  alias FlutterEmbedder.StandardCallCodec
-  defstruct [:handle, :channel, :method, :args, :status]
+  alias FlutterEmbedder.{StandardMessageCodec, PlatformChannelMessage}
+  defstruct [:method, :args]
 
-  def decode(
-        <<handle::8, channel_length::little-16, channel::binary-size(channel_length),
-          message_length::little-16, message::binary-size(message_length)>>
-      ) do
-    IO.inspect(message, label: "message")
-    {method, args_} = StandardCallCodec.decode_value(message)
-    {args, ""} = StandardCallCodec.decode_value(args_)
+  @type t :: %__MODULE__{
+          method: StandardMessageCodec.dart_string(),
+          args: StandardMessageCodec.value()
+        }
 
-    %__MODULE__{
-      # status: statuss,
-      handle: handle,
-      channel: channel,
-      method: method,
-      args: args
-    }
+  @spec decode(PlatformChannelMessage.t()) :: {:ok, t()} | {:error, String.t()}
+  def decode(%PlatformChannelMessage{message: message}) do
+    with {method, args_} when is_binary(method) and byte_size(args_) > 0 <-
+           StandardMessageCodec.decode_value(message),
+         {args, ""} <- StandardMessageCodec.decode_value(args_) do
+      {:ok,
+       %__MODULE__{
+         method: method,
+         args: args
+       }}
+    else
+      {value, _rest} -> {:error, "Method must be a string. got: #{inspect(value)}"}
+    end
+  rescue
+    e in [StandardMessageCodec.DecodeError] ->
+      {:error, e.message}
+
+    exception ->
+      reraise(exception, __STACKTRACE__)
   end
 end

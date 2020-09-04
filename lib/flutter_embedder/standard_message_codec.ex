@@ -1,4 +1,4 @@
-defmodule FlutterEmbedder.StandardCallCodec do
+defmodule FlutterEmbedder.StandardMessageCodec do
   @kStdNull 0
   @kStdTrue 1
   @kStdFalse 2
@@ -14,6 +14,18 @@ defmodule FlutterEmbedder.StandardCallCodec do
   @kStdList 12
   @kStdMap 13
 
+  @type dynamic_list() :: [value()]
+  @type dart_map() :: map()
+  @type int64() :: integer()
+  @type int32() :: integer()
+  @type float64() :: float()
+  @type dart_string() :: binary()
+  @type value :: dart_string() | float64() | int32() | int64() | dart_map() | dynamic_list()
+
+  defmodule DecodeError do
+    defexception [:message]
+  end
+
   @doc "Checks if a value can be encoded into a Dart value"
   defguard is_valid_dart_value(value)
            when is_binary(value) or
@@ -23,6 +35,7 @@ defmodule FlutterEmbedder.StandardCallCodec do
                   is_map(value) or
                   is_list(value)
 
+  @spec encode_value(value()) :: binary()
   def encode_value(nil), do: <<@kStdNull>>
   def encode_value(true), do: <<@kStdTrue>>
   def encode_value(false), do: <<@kStdFalse>>
@@ -71,6 +84,7 @@ defmodule FlutterEmbedder.StandardCallCodec do
     end)
   end
 
+  @spec decode_value(binary()) :: {value(), binary()} | no_return
   def decode_value(<<@kStdMap, num_pairs::8, map::binary>>) do
     decode_map(num_pairs, map, %{})
   end
@@ -111,6 +125,14 @@ defmodule FlutterEmbedder.StandardCallCodec do
   def decode_value(<<@kStdFalse, rest::binary>>), do: {false, rest}
   def decode_value(<<@kStdTrue, rest::binary>>), do: {true, rest}
   def decode_value(<<@kStdNull, rest::binary>>), do: {nil, rest}
+
+  def decode_value(<<type, _::binary>>) when type in 0..13 do
+    raise DecodeError, message: "Could not decode known type: #{type}"
+  end
+
+  def decode_value(<<type, _::binary>>) do
+    raise DecodeError, message: "Unknown type: #{inspect(type)}"
+  end
 
   def decode_uint8_list(num_items, rest, acc) when length(acc) == num_items,
     do: {Enum.reverse(acc), rest}

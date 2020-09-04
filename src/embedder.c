@@ -172,12 +172,12 @@ static void on_platform_message(
   //   // erlcmd_send(buffer, buffer_size);
 
     // platch_respond_success_std((const FlutterPlatformMessageResponseHandle*)message->response_handle, &STDFLOAT64(100.0));
-    platch_respond_error_std(
-            (const FlutterPlatformMessageResponseHandle*)message->response_handle,
-            "notsupported",
-            "The vehicle doesn't support the PID used for this channel.",
-            NULL
-        );
+    // platch_respond_error_std(
+    //         (const FlutterPlatformMessageResponseHandle*)message->response_handle,
+    //         "notsupported",
+    //         "The vehicle doesn't support the PID used for this channel.",
+    //         NULL
+    //     );
 
     // 256 char string
     // platch_respond_success_std((const FlutterPlatformMessageResponseHandle*)message->response_handle, &STDSTRING("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
@@ -260,7 +260,7 @@ bool isCallerDown()
 {
   struct pollfd ufd;
   memset(&ufd, 0, sizeof ufd);
-  ufd.fd     = STDIN_FILENO;
+  ufd.fd     = ERLCMD_READ_FD;
   ufd.events = POLLIN;
   if (poll(&ufd, 1, 0) < 0)
     return true;
@@ -351,7 +351,7 @@ int main(int argc, const char* argv[]) {
 
   // Initialize the file descriptor set for polling
   memset(fdset, -1, sizeof(fdset));
-  fdset[0].fd = STDIN_FILENO;
+  fdset[0].fd = ERLCMD_READ_FD;
   fdset[0].events = POLLIN;
   fdset[0].revents = 0;
 
