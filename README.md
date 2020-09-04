@@ -1,5 +1,8 @@
 # FlutterEmbedder
 
+![dart-example](assets/dart-example.png)
+![elixir-example-handler](assets/elixir-example-handler.png)
+
 **TODO: Add description**
 
 ## Installation

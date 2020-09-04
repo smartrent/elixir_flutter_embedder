@@ -1,21 +1,11 @@
 defmodule Example.FlutterMethodHandler do
-  require Logger
   @behaviour FlutterEmbedder.StandardMethodCall.Handler
 
-  def handle_std_call("platform/idk", "getBatteryLevel", _) do
-    # {:ok, 100.0}
-    # :not_implemented
-    {:error, "anyolethang", "The vehicle doesn't support the PID used for this channel.", nil}
+  def handle_std_call("samples.flutter.dev/battery", "getBatteryLevel", _) do
+    {:ok, 100.00}
   end
 
-  def handle_std_call(channel, method, value) do
-    Logger.debug("""
-    Flutter platform message not implemented:
-    channel: #{channel}
-    method: #{method}
-    value: #{inspect(value)}
-    """)
-
+  def handle_std_call(_channel, _method, _value) do
     :not_implemented
   end
 end
