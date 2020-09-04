@@ -24,7 +24,9 @@ defmodule Example.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:flutter_embedder, path: "../"}
+      {:flutter_embedder, path: "../"},
+      {:blue_heron, "~> 0.1"},
+      {:blue_heron_transport_usb, "~> 0.1.0"}
     ]
   end
 end

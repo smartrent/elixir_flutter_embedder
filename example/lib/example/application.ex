@@ -8,7 +8,8 @@ defmodule Example.Application do
   def start(_type, _args) do
     children = [
       {FlutterEmbedder,
-       [Example.FlutterMethodHandler, Application.app_dir(:example, ["priv", "flutter_assets"])]}
+       [Example.FlutterMethodHandler, Application.app_dir(:example, ["priv", "flutter_assets"])]},
+      GoveeBulb
       # Starts a worker by calling: Example.Worker.start_link(arg)
       # {Example.Worker, arg}
     ]
