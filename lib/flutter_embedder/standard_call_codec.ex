@@ -14,6 +14,29 @@ defmodule FlutterEmbedder.StandardCallCodec do
   @kStdList 12
   @kStdMap 13
 
+  def encode_value(nil), do: <<0>>
+  def encode_value(true), do: <<1>>
+  def encode_value(false), do: <<2>>
+  def encode_value(int32) when abs(int32) <= 0x7FFFFFFF, do: <<3, int32::signed-native-32>>
+
+  def encode_value(int64) when abs(int64) <= 0x7FFFFFFFFFFFFFFF,
+    do: <<3, int64::signed-native-64>>
+
+  def encode_value(float64) when is_float(float64),
+    do: <<6, 0::32, float64::signed-native-float-64>>
+
+  def encode_value(string) when is_binary(string) and byte_size(string) < 254 do
+    <<7, byte_size(string)::8, string::binary>>
+  end
+
+  def encode_value(%{} = _map) do
+    raise("nope")
+  end
+
+  def encode_value(value) when is_list(value) do
+    raise("nope")
+  end
+
   def decode_value(<<@kStdMap, num_pairs::8, map::binary>>) do
     decode_map(num_pairs, map, %{})
   end

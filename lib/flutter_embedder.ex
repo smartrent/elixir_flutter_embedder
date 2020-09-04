@@ -50,15 +50,46 @@ defmodule FlutterEmbedder do
 
   def handle_info({port, {:data, data}}, %{port: port} = state) do
     try do
-      FlutterEmbedder.StandardCall.decode(data)
-      |> IO.inspect(label: "StandardCall")
+      call =
+        FlutterEmbedder.StandardCall.decode(data)
+        |> IO.inspect()
+
+      case handle_standard_call(call) do
+        {:ok, reply} ->
+          value_bin =
+            FlutterEmbedder.StandardCallCodec.encode_value(reply)
+            |> IO.inspect(label: "success encoded")
+
+          reply_bin = <<call.handle::8, 0, value_bin::binary>>
+          true = Port.command(port, <<byte_size(reply_bin)::16, reply_bin::binary>>)
+
+        {:error, reason} ->
+          class = FlutterEmbedder.StandardCallCodec.encode_value("idk")
+          message = FlutterEmbedder.StandardCallCodec.encode_value(reason)
+          reply_bin = <<call.handle::8, 1>> <> class <> message
+          true = Port.command(port, <<byte_size(reply_bin)::16, reply_bin::binary>>)
+      end
     catch
-      _, _ ->
+      error, reason ->
+        IO.warn(
+          """
+          error: #{error}
+          reason: #{inspect(reason)}
+          """,
+          __STACKTRACE__
+        )
+
         :ok
     end
 
     {:noreply, state}
   end
+
+  def handle_standard_call(%{channel: "platform/idk"}) do
+    {:ok, 100.0}
+  end
+
+  def handle_standard_call(_), do: {:error, "unhandled"}
 
   # TODO Check for errors instead of raising
   defp sanity_check([flutter_assets]) do

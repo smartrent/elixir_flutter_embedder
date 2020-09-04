@@ -67,8 +67,8 @@ class _MyHomePageState extends State<MyHomePage> {
     });
 
     try {
-      await platform.invokeMethod('getBatteryLevel', ["list", "arg"]);
-      // batteryLevel = 'Battery level at $result % .';
+      final double result = await platform.invokeMethod('getBatteryLevel');
+      batteryLevel = 'Battery level at $result % .';
     } on PlatformException catch (e) {
       batteryLevel = "Failed to get battery level: '${e.message}'.";
     }

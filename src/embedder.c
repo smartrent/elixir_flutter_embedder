@@ -120,7 +120,7 @@ static void on_platform_message(
 	void* userdata
 ) {
 
-  pthread_mutex_lock(&lock); 
+  pthread_mutex_lock(&lock);
   uint16_t channel_length = strlen(message->channel);
   if(head) {
     // debug("adding node");
@@ -141,7 +141,7 @@ static void on_platform_message(
     current->next->channel_length = channel_length;
     current->next->message = message->message;
     current->next->message_length = message->message_size;
-    
+
   } else {
     // debug("Creating head node");
     head = malloc(sizeof(erlcmd_platform_message_t));
@@ -157,7 +157,7 @@ static void on_platform_message(
     head->message_length = message->message_size;
   }
 
-  pthread_mutex_unlock(&lock); 
+  pthread_mutex_unlock(&lock);
   eventfd_write(fdset[1].fd, 1);
 
   if(strcmp(message->channel, "platform/idk") == 0) {
@@ -179,7 +179,7 @@ static void on_platform_message(
     //         NULL
     //     );
 
-    // 256 char string 
+    // 256 char string
     // platch_respond_success_std((const FlutterPlatformMessageResponseHandle*)message->response_handle, &STDSTRING("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
   }
 }
@@ -269,15 +269,19 @@ bool isCallerDown()
 
 static void handle_from_elixir(const uint8_t *buffer, size_t length, void *cookie) {
   debug("handle_from_elixir: len=%lu, event=%u", length, buffer[2]);
+  erlcmd_platform_message_t* previous = head;
   erlcmd_platform_message_t* current = head;
   while(current) {
+    debug("checking");
     if(current->erlcmd_handle == buffer[2]) {
       debug("responding to %lu", current->erlcmd_handle);
-      // platch_respond_success_std((const FlutterPlatformMessageResponseHandle*)current->response_handle, );
-      hexDump("fromelixir", &buffer[3], length - sizeof(uint8_t));
       FlutterEngineSendPlatformMessageResponse(engine, (const FlutterPlatformMessageResponseHandle*)current->response_handle, &buffer[3], length - sizeof(uint8_t));
+      previous->next = current->next;
+      free(current);
       break;
-    } 
+    } else {
+      previous = current;
+    }
     current = current->next;
   }
 }
@@ -301,7 +305,7 @@ void *myThreadFun(void *vargp)
           erlcmd_process(&handler);
 
       if (fdset[1].revents & (POLLIN | POLLHUP)) {
-          pthread_mutex_lock(&lock); 
+          pthread_mutex_lock(&lock);
           eventfd_t event;
           eventfd_read(fdset[1].fd, &event);
 
@@ -331,7 +335,7 @@ void *myThreadFun(void *vargp)
           // debug("why won't this packet go thru??????");
           // uint8_t buffer[4] = {0, 0, 'a', 'b'};
           // erlcmd_send(buffer, 4);
-          pthread_mutex_unlock(&lock); 
+          pthread_mutex_unlock(&lock);
       }
   }
 }
@@ -375,11 +379,11 @@ int main(int argc, const char* argv[]) {
   glfwSetWindowSizeCallback(window, GLFWwindowSizeCallback);
   glfwSetMouseButtonCallback(window, GLFWmouseButtonCallback);
 
-  if (pthread_mutex_init(&lock, NULL) != 0) { 
-    error("\n mutex init has failed\n"); 
-    return 1; 
-  } 
-  
+  if (pthread_mutex_init(&lock, NULL) != 0) {
+    error("\n mutex init has failed\n");
+    return 1;
+  }
+
   pthread_t thread_id;
   pthread_create(&thread_id, NULL, myThreadFun, NULL);
 
@@ -389,7 +393,7 @@ int main(int argc, const char* argv[]) {
   }
 
   pthread_join(thread_id, NULL);
-  pthread_mutex_destroy(&lock); 
+  pthread_mutex_destroy(&lock);
   glfwDestroyWindow(window);
   glfwTerminate();
 
