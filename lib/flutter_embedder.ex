@@ -92,14 +92,16 @@ defmodule FlutterEmbedder do
   end
 
   # TODO Check for errors instead of raising
-  defp sanity_check([flutter_assets]) do
+  @doc false
+  def sanity_check([flutter_assets]) do
     true = "vm_snapshot_data" in File.ls!(flutter_assets)
     # icudtl_file = Application.app_dir(:flutter_embedder, ["priv", "icudtl.dat"])
     icudtl_file = "icudtl.dat"
     {:ok, ["#{flutter_assets}", "#{icudtl_file}"]}
   end
 
-  defp port_executable() do
+  @doc false
+  def port_executable() do
     Application.app_dir(:flutter_embedder, ["priv", "flutter_embedder"])
   end
 end
