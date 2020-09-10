@@ -38,10 +38,17 @@ linux-arm-embedder.zip:
 linux-x64-embedder.zip:
 	wget -O linux-x64-embedder.zip https://storage.googleapis.com/flutter_infra/flutter/9d5b21729ff53dbf8eadd8bc97e0e30d77abec95/linux-x64/linux-x64-embedder
 
+format:
+	astyle --style=kr --indent=spaces=4 --align-pointer=name \
+	    --align-reference=name --convert-tabs --attach-namespaces \
+	    --max-code-length=110 --max-instatement-indent=120 --pad-header \
+	    --pad-oper \
+	    embedder*.c
+
 clean:
 	rm -rf $(PREFIX)/libflutter_engine.so flutter_embedder.h $(PREFIX)/flutter_embedder linux-x64-embedder.zip
 
 $(PREFIX) $(BUILD):
 	mkdir -p $(PREFIX)
 
-.PHONY: all clean
+.PHONY: all clean format
