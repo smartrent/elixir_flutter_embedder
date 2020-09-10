@@ -98,7 +98,7 @@ struct drm_fb {
 };
 
 /// width & height of the display in pixels
-uint32_t width, height;
+static uint32_t width, height;
 
 /// physical width & height of the display in millimeters
 /// the physical size can only be queried for HDMI displays (and even then, most displays will
@@ -106,15 +106,15 @@ uint32_t width, height;
 /// for DSI displays, the physical size of the official 7-inch display will be set in init_display.
 /// init_display will only update width_mm and height_mm if they are set to zero, allowing you
 ///   to hardcode values for you individual display.
-uint32_t width_mm = 0, height_mm = 0;
-uint32_t refresh_rate;
+static uint32_t width_mm = 0, height_mm = 0;
+static uint32_t refresh_rate;
 
 /// The pixel ratio used by flutter.
 /// This is computed inside init_display using width_mm and height_mm.
 /// flutter only accepts pixel ratios >= 1.0
 /// init_display will only update this value if it is equal to zero,
 ///   allowing you to hardcode values.
-double pixel_ratio = 0.0;
+static double pixel_ratio = 0.0;
 
 enum device_orientation {
     kPortraitUp, kLandscapeLeft, kPortraitDown, kLandscapeRight
@@ -122,14 +122,14 @@ enum device_orientation {
 
 /// The current device orientation.
 /// The initial device orientation is based on the width & height data from drm.
-enum device_orientation orientation;
+static enum device_orientation orientation;
 
 /// The angle between the initial device orientation and the current device orientation in degrees.
 /// (applied as a rotation to the flutter window in transformation_callback, and also
 /// is used to determine if width/height should be swapped when sending a WindowMetrics event to flutter)
-int rotation = 0;
+static int rotation = 0;
 
-void drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
+static void drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
 {
     struct drm_fb *fb = data;
 
@@ -139,7 +139,7 @@ void drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
     free(fb);
 }
 
-struct drm_fb *drm_fb_get_from_bo(struct gbm_bo *bo)
+static struct drm_fb *drm_fb_get_from_bo(struct gbm_bo *bo)
 {
     uint32_t width, height, format, strides[4] = {0}, handles[4] = {0}, offsets[4] = {0}, flags = 0;
     int ok = -1;
@@ -201,7 +201,7 @@ struct drm_fb *drm_fb_get_from_bo(struct gbm_bo *bo)
     return fb;
 }
 
-bool init_display(void)
+static bool init_display(void)
 {
     /**********************
      * DRM INITIALIZATION *
@@ -673,14 +673,14 @@ bool init_display(void)
     return true;
 }
 
-void destroy_display(void)
+static void destroy_display(void)
 {
     debug("Deinitializing display not yet implemented\n");
 }
 
-FlutterEngine engine;
+static FlutterEngine engine;
 
-bool make_current(void *userdata)
+static bool make_current(void *userdata)
 {
     debug("make_current");
     if (eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context) != EGL_TRUE) {
@@ -692,7 +692,7 @@ bool make_current(void *userdata)
     return true;
 }
 
-bool clear_current(void *userdata)
+static bool clear_current(void *userdata)
 {
     debug("clear_current");
     if (eglMakeCurrent(egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) != EGL_TRUE) {
@@ -703,7 +703,7 @@ bool clear_current(void *userdata)
     return true;
 }
 
-bool present(void *userdata)
+static bool present(void *userdata)
 {
     debug("present");
     fd_set fds;
@@ -740,7 +740,7 @@ bool present(void *userdata)
     return true;
 }
 
-uint32_t fbo_callback(void *userdata)
+static uint32_t fbo_callback(void *userdata)
 {
     debug("fbo");
     return 0;
@@ -748,6 +748,7 @@ uint32_t fbo_callback(void *userdata)
 
 static bool runs_platform_tasks_on_current_thread(void *userdata)
 {
+    debug("runs_platform_tasks_on_current_thread");
     return true;
 }
 
@@ -757,12 +758,13 @@ static void on_post_flutter_task(
     void *userdata
 )
 {
+    debug("on_post_flutter_task");
     FlutterEngineRunTask(engine, &task);
     return;
 }
 
-bool RunFlutter(const char *project_path,
-                const char *icudtl_path)
+static void RunFlutter(const char *project_path,
+                       const char *icudtl_path)
 {
     FlutterRendererConfig config = {};
     config.type = kOpenGL;
@@ -793,19 +795,26 @@ bool RunFlutter(const char *project_path,
     };
 
     FlutterEngineResult result = FlutterEngineRun(FLUTTER_ENGINE_VERSION, &config, &args, NULL, &engine);
-    assert(result == kSuccess && engine != NULL);
-    debug("width=%lu height=%lu pixel_ratio=%lf", width, height, pixel_ratio);
-    result = FlutterEngineSendWindowMetricsEvent(
-                 engine,
-    &(FlutterWindowMetricsEvent) {
-        .struct_size = sizeof(FlutterWindowMetricsEvent), .width = width, .height = height, .pixel_ratio = pixel_ratio
+    if (result != kSuccess || engine == NULL) {
+        debug("FlutterEngineRun failed!!!!");
+        exit(EXIT_FAILURE);
     }
-             );
-    assert(result == kSuccess);
-    return true;
+    debug("width=%lu height=%lu pixel_ratio=%lf", width, height, pixel_ratio);
+    FlutterWindowMetricsEvent event = {
+        .struct_size = sizeof(FlutterWindowMetricsEvent),
+        .width = width,
+        .height = height,
+        .pixel_ratio = pixel_ratio
+    };
+
+    result = FlutterEngineSendWindowMetricsEvent(engine, &event);
+    if (result != kSuccess) {
+        debug("FlutterEngineSendWindowMetricsEvent failed");
+        exit(EXIT_FAILURE);
+    }
 }
 
-bool isCallerDown()
+static bool isCallerDown()
 {
     struct pollfd ufd;
     memset(&ufd, 0, sizeof ufd);
@@ -827,14 +836,13 @@ int main(int argc, const char *argv[])
 
     init_display();
 
-    bool runResult = RunFlutter(project_path, icudtl_path);
-    assert(runResult);
+    RunFlutter(project_path, icudtl_path);
 
     //main loop
     while (!isCallerDown()) {
 
     }
 
-
+    debug("Exiting...");
     exit(EXIT_SUCCESS);
 }
