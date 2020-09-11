@@ -43,7 +43,7 @@ format:
 	    --align-reference=name --convert-tabs --attach-namespaces \
 	    --max-code-length=110 --max-instatement-indent=120 --pad-header \
 	    --pad-oper \
-	    embedder*.c
+	    embedder*.c flutter-pi.c
 
 clean:
 	rm -rf $(PREFIX)/libflutter_engine.so flutter_embedder.h $(PREFIX)/flutter_embedder linux-x64-embedder.zip
