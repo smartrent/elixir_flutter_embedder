@@ -138,7 +138,6 @@ static void drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
 
     free(fb);
 }
-
 static struct drm_fb *drm_fb_get_from_bo(struct gbm_bo *bo)
 {
     uint32_t width, height, format, strides[4] = {0}, handles[4] = {0}, offsets[4] = {0}, flags = 0;
@@ -448,6 +447,8 @@ static bool init_display()
     drmModeFreeResources(resources);
 
     drm.connector_id = connector->connector_id;
+
+
 
     /**********************
      * GBM INITIALIZATION *
