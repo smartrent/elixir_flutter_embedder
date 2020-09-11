@@ -47,7 +47,7 @@ defmodule NervesExample.MixProject do
 
       # Dependencies for all targets except :host
       {:nerves_runtime, "~> 0.6", targets: @all_targets},
-      {:nerves_pack, "~> 0.2", targets: @all_targets},
+      {:nerves_pack, github: "nerves-project/nerves_pack", branch: "main", targets: @all_targets},
 
       # Dependencies for specific targets
       {:nerves_system_bbb_sgx,
