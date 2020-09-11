@@ -30,15 +30,15 @@
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 
-#include <flutter_embedder.h>
+#include "flutter_embedder.h"
 
-#include <flutter-pi.h>
-#include <console_keyboard.h>
-#include <platformchannel.h>
-#include <pluginregistry.h>
+#include "flutter-pi.h"
+#include "console_keyboard.h"
+#include "platformchannel.h"
+#include "pluginregistry.h"
 //#include <plugins/services.h>
-#include <plugins/text_input.h>
-#include <plugins/raw_keyboard.h>
+#include "plugins/text_input.h"
+#include "plugins/raw_keyboard.h"
 
 
 char *usage = "\
@@ -456,9 +456,11 @@ void          *proc_resolver(void *userdata, const char *name)
 }
 void           on_platform_message(const FlutterPlatformMessage *message, void *userdata)
 {
+#if 0 // FAH
     int ok;
     if ((ok = plugin_registry_on_platform_message((FlutterPlatformMessage *)message)) != 0)
         fprintf(stderr, "plugin_registry_on_platform_message failed: %s\n", strerror(ok));
+#endif // FAH
 }
 void           vsync_callback(void *userdata, intptr_t baton)
 {
@@ -1021,7 +1023,7 @@ bool init_display(void)
      **********************/
     printf("Creating GBM device\n");
     gbm.device = gbm_create_device(drm.fd);
-    gbm.format = DRM_FORMAT_XRGB8888;
+    gbm.format = DRM_FORMAT_RGB565;
     gbm.surface = NULL;
     gbm.modifier = DRM_FORMAT_MOD_LINEAR;
 
@@ -1239,12 +1241,14 @@ bool init_application(void)
 {
     int ok, _errno;
 
+#if 0 // FAH
     printf("Initializing Plugin Registry...\n");
     ok = plugin_registry_init();
     if (ok != 0) {
         fprintf(stderr, "Could not initialize plugin registry: %s\n", strerror(ok));
         return false;
     }
+#endif // FAH
 
     // configure flutter rendering
     flutter.renderer_config.type = kOpenGL;
@@ -1341,9 +1345,11 @@ void destroy_application(void)
         engine = NULL;
     }
 
+#if 0 // FAH
     if ((ok = plugin_registry_deinit()) != 0) {
         fprintf(stderr, "Could not deinitialize plugin registry: %s\n", strerror(ok));
     }
+#endif // FAH
 }
 
 /****************
@@ -1500,6 +1506,7 @@ close_continue:
     if (n_input_devices == 0)
         printf("Warning: No evdev input devices configured.\n");
 
+#if 0 // FAH
     // configure the console
     ok = console_make_raw();
     if (ok != 0) {
@@ -1507,6 +1514,7 @@ close_continue:
     }
 
     console_flush_stdin();
+#endif // FAH
 
     // now send all the kAdd events to flutter.
     ok = kSuccess == FlutterEngineSendPointerEvent(engine, flutterevents, i_flutterevent);
@@ -1644,7 +1652,9 @@ void  on_evdev_input(fd_set fds, size_t n_ready_fds)
                         break;
                     }
 
+#if 0 // FAH
                     rawkb_on_keyevent(EVDEV_KEY_TO_GLFW_KEY(e->code), 0, action);
+#endif // FAH
                 } else if (e->code != BTN_TOUCH || device->is_direct) {
                     if (e->value == 1) device->active_buttons |=  FLUTTER_BUTTON_FROM_EVENT_CODE(e->code);
                     else               device->active_buttons &= ~FLUTTER_BUTTON_FROM_EVENT_CODE(e->code);
@@ -1739,6 +1749,7 @@ void  on_console_input(void)
 
     buffer[ok] = '\0';
 
+#if 0 // FAH
     cursor = buffer;
     while (*cursor) {
         if (key = console_try_get_key(cursor, &cursor), key != GLFW_KEY_UNKNOWN) {
@@ -1751,6 +1762,7 @@ void  on_console_input(void)
             break;
         }
     }
+#endif // FAH
 }
 void *io_loop(void *userdata)
 {
