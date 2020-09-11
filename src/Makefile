@@ -22,14 +22,14 @@ all: $(PREFIX)/flutter_embedder
 
 # $(PREFIX)/flutter_embedder: $(PREFIX) embedder.c platformchannel.c erlcmd.c $(PREFIX)/libflutter_engine.so $(PREFIX)/icudtl.dat flutter_embedder.h
 # 	$(CC) embedder.c platformchannel.c erlcmd.c ${CFLAGS} ${GLFW_CFLAGS} ${GLEW_CFLAGS} ${LDFLAGS} ${GLEW_LDFLAGS} ${GLFW_LDFLAGS} -o $(PREFIX)/flutter_embedder
-$(PREFIX)/flutter_embedder: $(PREFIX) embedder_drm.c $(PREFIX)/libflutter_engine.so $(PREFIX)/icudtl.dat flutter_embedder.h
-	$(CC) embedder_drm.c ${CFLAGS} ${LDFLAGS} -o $(PREFIX)/flutter_embedder
+$(PREFIX)/flutter_embedder: $(PREFIX) flutter-pi.c $(PREFIX)/libflutter_engine.so $(PREFIX)/icudtl.dat flutter_embedder.h
+	$(CC) flutter-pi.c ${CFLAGS} ${LDFLAGS} -o $(PREFIX)/flutter_embedder -pthread
 
 $(PREFIX)/libflutter_engine.so flutter_embedder.h $(PREFIX)/icudtl.dat: linux-arm-embedder.zip
 	unzip -o -qq linux-arm-embedder.zip
-	mv flutter-pi-e800fc3692b4d581631005faf58c65f86c882eb5/flutter_embedder.h flutter_embedder.h
-	mv flutter-pi-e800fc3692b4d581631005faf58c65f86c882eb5/icudtl.dat $(PREFIX)/icudtl.dat
-	mv flutter-pi-e800fc3692b4d581631005faf58c65f86c882eb5/libflutter_engine.so.debug $(PREFIX)/libflutter_engine.so
+	cp flutter-pi-e800fc3692b4d581631005faf58c65f86c882eb5/flutter_embedder.h flutter_embedder.h
+	cp flutter-pi-e800fc3692b4d581631005faf58c65f86c882eb5/icudtl.dat $(PREFIX)/icudtl.dat
+	cp flutter-pi-e800fc3692b4d581631005faf58c65f86c882eb5/libflutter_engine.so.debug $(PREFIX)/libflutter_engine.so
 	rm -rf flutter-pi-e800fc3692b4d581631005faf58c65f86c882eb5/
 
 linux-arm-embedder.zip:
