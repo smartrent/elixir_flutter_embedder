@@ -201,7 +201,7 @@ static struct drm_fb *drm_fb_get_from_bo(struct gbm_bo *bo)
     return fb;
 }
 
-static bool init_display(void)
+static bool init_display()
 {
     /**********************
      * DRM INITIALIZATION *
@@ -448,8 +448,6 @@ static bool init_display(void)
     drmModeFreeResources(resources);
 
     drm.connector_id = connector->connector_id;
-
-
 
     /**********************
      * GBM INITIALIZATION *
@@ -820,7 +818,7 @@ static bool isCallerDown()
     memset(&ufd, 0, sizeof ufd);
     ufd.fd     = ERLCMD_READ_FD;
     ufd.events = POLLIN;
-    if (poll(&ufd, 1, 0) < 0)
+    if (poll(&ufd, 1, -1) < 0)
         return true;
     return ufd.revents & POLLHUP;
 }
@@ -840,7 +838,7 @@ int main(int argc, const char *argv[])
 
     //main loop
     while (!isCallerDown()) {
-
+        debug("main loop iterating");
     }
 
     debug("Exiting...");
