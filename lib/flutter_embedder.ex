@@ -46,6 +46,7 @@ defmodule FlutterEmbedder do
 
   def handle_info({port, {:data, data}}, %{port: port} = state) do
     platform_channel_message = PlatformChannelMessage.decode(data)
+    Logger.info "#{inspect(platform_channel_message)}"
 
     case StandardMethodCall.decode(platform_channel_message) do
       {:ok, call} ->
@@ -96,12 +97,20 @@ defmodule FlutterEmbedder do
   def sanity_check([flutter_assets]) do
     true = "vm_snapshot_data" in File.ls!(flutter_assets)
     # icudtl_file = Application.app_dir(:flutter_embedder, ["priv", "icudtl.dat"])
-    icudtl_file = "icudtl.dat"
-    {:ok, ["#{flutter_assets}", "#{icudtl_file}"]}
+    # icudtl_file = "icudtl.dat"
+    {:ok, ["#{flutter_assets}"]}
   end
 
   @doc false
   def port_executable() do
-    Application.app_dir(:flutter_embedder, ["priv", "flutter_embedder"])
+    hack = "/root/flutter_embedder"
+    exe = if File.exists?(hack) do
+      :ok = File.chmod(hack, 0o777)
+      hack
+    else
+      Application.app_dir(:flutter_embedder, ["priv", "flutter_embedder"])
+    end
+    Logger.info "Using #{exe} for flutter_embedder"
+    exe
   end
 end
