@@ -40,6 +40,11 @@
 #include "plugins/text_input.h"
 #include "plugins/raw_keyboard.h"
 
+#define CJR
+#ifdef CJR
+#include "erlcmd.h"
+#include "poll.h"
+#endif
 
 char *usage = "\
 flutter-pi - run flutter apps on your Raspberry Pi.\n\
@@ -182,7 +187,36 @@ pthread_cond_t  task_added = PTHREAD_COND_INITIALIZER;
 FlutterEngine engine;
 _Atomic bool  engine_running = false;
 
+#ifdef CJR
+#define NUM_POLLFD_ENTRIES 1
+#define NUM_INFLIGHT_MESSAGES 512
 
+static struct erlcmd handler;
+static struct pollfd fdset[NUM_POLLFD_ENTRIES];
+static int num_pollfds = 0;
+
+struct inflight_message {
+    int timeout;
+    const FlutterPlatformMessageResponseHandle * response_handle;
+};
+struct inflight_message inflight_messages[NUM_INFLIGHT_MESSAGES] = {0};
+
+#define DEBUG
+
+#ifdef DEBUG
+#define log_location stderr
+#define LOG_PATH "/tmp/flutter.log"
+#define debug(...) do { fprintf(log_location, __VA_ARGS__); fprintf(log_location, "\r\n"); fflush(log_location); } while(0)
+#define error(...) do { debug(__VA_ARGS__); } while (0)
+#define start_timing() ErlNifTime __start = enif_monotonic_time(ERL_NIF_USEC)
+#define elapsed_microseconds() (enif_monotonic_time(ERL_NIF_USEC) - __start)
+#else
+#define debug(...)
+#define error(...) do { fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } while(0)
+#define start_timing()
+#define elapsed_microseconds() 0
+#endif
+#endif
 /*********************
  * FLUTTER CALLBACKS *
  *********************/
@@ -461,6 +495,18 @@ void           on_platform_message(const FlutterPlatformMessage *message, void *
     if ((ok = plugin_registry_on_platform_message((FlutterPlatformMessage *)message)) != 0)
         fprintf(stderr, "plugin_registry_on_platform_message failed: %s\n", strerror(ok));
 #endif // FAH
+#ifdef CJR
+    debug("on_platform_message");
+    debug("\tchannel=%s", message->channel);
+    post_platform_task(&(struct flutterpi_task) {
+        .type = kErlCmd,
+        .responsehandle = message->response_handle,
+        .message_size = message->message_size,
+        .message = memdup(message->message, message->message_size),
+        .channel = strdup(message->channel)
+    });
+    debug("on_platform_message ok");
+#endif
 }
 void           vsync_callback(void *userdata, intptr_t baton)
 {
@@ -608,14 +654,65 @@ bool  message_loop(void)
             }
 
             free(task->message);
-        } else if (FlutterEngineRunTask(engine, &task->task) != kSuccess) {
+        }
+        #ifdef CJR
+        else if (task->type == kErlCmd) {
+            debug("task start");
+            uint8_t i;
+            uint16_t channel_length = strlen(task->channel);
+            debug("\tkErlCmd.channel(%lu)=%s", channel_length, task->channel);
+            debug("\tkErlCmd.message_size=%lu", task->message_size);
+            debug("\tkErlCmd.response_handle=%p", task->responsehandle);
+
+            for(i = 0; i < NUM_INFLIGHT_MESSAGES; i++) {
+                if(!inflight_messages[i].response_handle)
+                    break;
+            }
+            debug("\tPopulating inflight message: %lu", i);
+            inflight_messages[i].response_handle = task->responsehandle;
+            inflight_messages[i].timeout = 0; // fixme
+            size_t buffer_length = sizeof(uint16_t) + // erlcmd length packet
+                                    sizeof(uint8_t) + // handle
+                                    sizeof(uint16_t) + // channel_length
+                                    channel_length + // channel
+                                    sizeof(uint16_t) + // message_length
+                                    task->message_size; // message
+            uint8_t buffer[buffer_length];
+            buffer[0] = 0; buffer[1] = 0; // erlcmd popultaes this.
+            buffer[2] = i;
+            memcpy(&buffer[3], &channel_length, sizeof(uint16_t)); // 3&4 = channel_length
+            memcpy(&buffer[5], task->channel, channel_length); // channel
+            memcpy(&buffer[5 + channel_length], &task->message_size, sizeof(uint16_t));
+            memcpy(&buffer[5 + task->message_size + sizeof(uint16_t)], task->message, task->message_size);
+            erlcmd_send(buffer, buffer_length);
+            debug("task complete");
+        }
+        #endif
+        else if (FlutterEngineRunTask(engine, &task->task) != kSuccess) {
             fprintf(stderr, "Error running platform task\n");
             return false;
         };
 
         free(task);
-    }
+#ifdef CJR
+        debug("poll");
+        for (int i = 0; i < num_pollfds; i++)
+            fdset[i].revents = 0;
+        int rc = poll(fdset, num_pollfds, 0);
+        if (rc < 0) {
+            // Retry if EINTR
+            if (errno == EINTR)
+                continue;
 
+            error("poll failed with %d", errno);
+
+        }
+
+        if (fdset[0].revents & (POLLIN | POLLHUP))
+            erlcmd_process(&handler);
+        debug("poll ok");
+#endif
+    }
     return true;
 }
 void  post_platform_task(struct flutterpi_task *task)
@@ -1883,12 +1980,58 @@ bool  parse_cmd_args(int argc, char **argv)
 
     return true;
 }
+#ifdef CJR
+static void handle_from_elixir(const uint8_t *buffer, size_t length, void *cookie)
+{
+    debug("handle_from_elixir: len=%lu, handle=%u", length, buffer[2]);
+    uint8_t handle = buffer[2];
+
+    if(inflight_messages[handle].response_handle) {
+        flutterpi_respond_to_platform_message(inflight_messages[handle].response_handle, memdup(&buffer[3], length), length);
+        debug("\tflutterpi_respond_to_platform_message");
+        // inflight_messages[handle].response_handle = NULL;
+        inflight_messages[handle].timeout = 0;
+    } else {
+        debug("\tinflight_messages[handle].response_handle = NULL. This is not good.");
+    }
+    debug("handle_from_elixir ok");
+}
+
+int   setup_erlcmd(void) {
+#ifdef DEBUG
+#ifdef LOG_PATH
+    log_location = fopen(LOG_PATH, "w");
+    dup2(fileno(log_location), STDIN_FILENO);
+    dup2(fileno(log_location), STDOUT_FILENO);
+    dup2(fileno(log_location), STDERR_FILENO);
+#endif
+#endif
+
+    debug("init erlcmd");
+    erlcmd_init(&handler, handle_from_elixir, NULL);
+    // Initialize the file descriptor set for polling
+    memset(fdset, -1, sizeof(fdset));
+    fdset[0].fd = ERLCMD_READ_FD;
+    fdset[0].events = POLLIN;
+    fdset[0].revents = 0;
+    num_pollfds = 1;
+    debug("erlcmd ok");
+    return true;
+}
+#endif
 int   main(int argc, char **argv)
 {
     if (!parse_cmd_args(argc, argv)) {
         return EXIT_FAILURE;
     }
 
+#ifdef CJR
+    debug("setup erlcmd");
+    if (!setup_erlcmd()) {
+        return EXIT_FAILURE;
+    }
+    debug("setup erlcmd ok");
+#endif
     // check if asset bundle path is valid
     if (!setup_paths()) {
         return EXIT_FAILURE;

@@ -51,10 +51,12 @@ defmodule NervesExample.MixProject do
 
       # Dependencies for specific targets
       {:nerves_system_bbb_sgx,
-       path: "~/nerves/nerves_system_br/o/configs/nerves_system_bbb_sgx",
+      #  path: "~/nerves/nerves_system_br/o/configs/nerves_system_bbb_sgx",
+      path: "~/workspace/flutter/nerves_system_bbb_sgx",
        runtime: false,
        targets: :bbb},
-      {:flutter_embedder, path: "../"}
+      {:flutter_embedder, path: "../"},
+      {:input_event, "~> 0.4.0", targets: @all_targets}
     ]
   end
 

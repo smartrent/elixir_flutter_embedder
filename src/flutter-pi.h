@@ -38,7 +38,8 @@ typedef enum {
 	kUpdateOrientation,
 	kSendPlatformMessage,
 	kRespondToPlatformMessage,
-	kFlutterTask
+	kFlutterTask,
+	kErlCmd
 } flutterpi_task_type;
 
 struct flutterpi_task {

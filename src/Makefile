@@ -7,10 +7,14 @@ BUILD  = $(MIX_APP_PATH)/obj
 
 # drm
 CFLAGS += $(shell pkg-config libdrm --cflags)
-LDFLAGS += $(shell pkg-config libdrm --libs)
-LDFLAGS += -ldl -lgbm -lGLESv2 -lEGL -lglfw
+CFLAGS += -DBUILD_ERLCMD_PLUGIN
 
+LDFLAGS += $(shell pkg-config libdrm --libs)
+LDFLAGS += -ldrm  -ldl -lgbm -lGLESv2 -lEGL -lglfw -pthread
 LDFLAGS += -L$(PREFIX) -lflutter_engine
+
+SRC =  flutter-pi.c console_keyboard.c
+SRC += erlcmd.c
 
 # GLEW_CFLAGS=$(shell pkg-config --cflags glew)
 # GLEW_LDFLAGS=$(shell pkg-config --libs glew)
@@ -23,7 +27,7 @@ all: $(PREFIX)/flutter_embedder
 # $(PREFIX)/flutter_embedder: $(PREFIX) embedder.c platformchannel.c erlcmd.c $(PREFIX)/libflutter_engine.so $(PREFIX)/icudtl.dat flutter_embedder.h
 # 	$(CC) embedder.c platformchannel.c erlcmd.c ${CFLAGS} ${GLFW_CFLAGS} ${GLEW_CFLAGS} ${LDFLAGS} ${GLEW_LDFLAGS} ${GLFW_LDFLAGS} -o $(PREFIX)/flutter_embedder
 $(PREFIX)/flutter_embedder: $(PREFIX) flutter-pi.c $(PREFIX)/libflutter_engine.so $(PREFIX)/icudtl.dat flutter_embedder.h
-	$(CC) flutter-pi.c ${CFLAGS} ${LDFLAGS} -o $(PREFIX)/flutter_embedder -pthread
+	$(CC) ${SRC} ${CFLAGS} $(LDFLAGS) -o $(PREFIX)/flutter_embedder
 
 $(PREFIX)/libflutter_engine.so flutter_embedder.h $(PREFIX)/icudtl.dat: linux-arm-embedder.zip
 	unzip -o -qq linux-arm-embedder.zip
