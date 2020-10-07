@@ -33,11 +33,11 @@ defmodule NervesExample.Application do
 
   def children(_target) do
     [
-      # {FlutterEmbedder,
-      #  [
-      #    NervesExample.FlutterMethodHandler,
-      #    Application.app_dir(:nerves_example, ["priv", "flutter_assets"])
-      #  ]}
+      {FlutterEmbedder,
+       [
+         NervesExample.FlutterMethodHandler,
+         Application.app_dir(:nerves_example, ["priv", "flutter_assets"])
+       ]}
       # Children for all targets except host
       # Starts a worker by calling: NervesExample.Worker.start_link(arg)
       # {NervesExample.Worker, arg},

@@ -40,7 +40,7 @@
 #include "plugins/text_input.h"
 #include "plugins/raw_keyboard.h"
 
-#define CJR
+// #define CJR
 #ifdef CJR
 #include "erlcmd.h"
 #include "poll.h"
