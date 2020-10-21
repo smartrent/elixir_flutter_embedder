@@ -10,7 +10,8 @@ CFLAGS += $(shell pkg-config libdrm --cflags)
 CFLAGS += -DBUILD_ERLCMD_PLUGIN
 
 LDFLAGS += $(shell pkg-config libdrm --libs)
-LDFLAGS += -ldrm  -ldl -lgbm -lGLESv2 -lEGL -lglfw -pthread
+# LDFLAGS += -ldrm  -ldl -lgbm -lGLESv2 -lEGL -lglfw -pthread
+LDFLAGS += -ldrm  -ldl -lgbm -lGLESv2 -lEGL -pthread
 LDFLAGS += -L$(PREFIX) -lflutter_engine
 
 SRC =  flutter-pi.c console_keyboard.c
