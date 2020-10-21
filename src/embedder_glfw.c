@@ -16,11 +16,11 @@
 #include "erlcmd.h"
 
 #include "flutter_embedder.h"
-#include "platformchannel.h"
 
 #define DEBUG
 
 #ifdef DEBUG
+// #define LOG_PATH "log.txt"
 #define log_location stderr
 #define debug(...) do { fprintf(log_location, __VA_ARGS__); fprintf(log_location, "\r\n"); fflush(log_location); } while(0)
 #define error(...) do { debug(__VA_ARGS__); } while (0)
@@ -339,7 +339,13 @@ void *myThreadFun(void *vargp)
 
 int main(int argc, const char *argv[])
 {
+#ifdef DEBUG
+#ifdef LOG_PATH
+    log_location = fopen(LOG_PATH, "w");
+#endif
+#endif
     if (argc != 3) {
+        error("Invalid Arguments");
         exit(EXIT_FAILURE);
     }
 
@@ -376,7 +382,7 @@ int main(int argc, const char *argv[])
     glfwSetKeyCallback(window, GLFWKeyCallback);
     glfwSetWindowSizeCallback(window, GLFWwindowSizeCallback);
     glfwSetMouseButtonCallback(window, GLFWmouseButtonCallback);
-
+    error("??????");
     if (pthread_mutex_init(&lock, NULL) != 0) {
         error("\n mutex init has failed\n");
         return 1;
