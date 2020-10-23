@@ -4,6 +4,7 @@ import Config
 # docs for separating out critical OTP applications such as those
 # involved with firmware updates.
 bbb_init = if Mix.target() == :bbb do
+  IO.puts "Enabling BBB stuff"
   [
     {:os, :cmd, ['modprobe pvrsrvkm']},
     {:os, :cmd, ['modprobe edt-ft5x06']},
@@ -12,6 +13,7 @@ bbb_init = if Mix.target() == :bbb do
 else
   []
 end
+
 config :shoehorn,
   init: bbb_init ++ [
     :nerves_runtime,
