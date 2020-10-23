@@ -24,6 +24,8 @@ defmodule FlutterEmbedder do
   def init([module | args]) do
     case sanity_check(args) do
       {:ok, args} ->
+        Logger.info("#{port_executable()} #{Enum.join(args, " ")}")
+
         port =
           Port.open({:spawn_executable, port_executable()}, [
             {:args, args},

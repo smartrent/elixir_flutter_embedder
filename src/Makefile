@@ -30,7 +30,7 @@ $(PREFIX)/flutter_embedder: $(PREFIX) $(PREFIX)/libflutter_engine.so $(PREFIX)/i
 ifeq ($(CROSSCOMPILE),)
 include precompiled_engine_x86_64.mk
 else
-inclue precompiled_engine_armv7.mk
+include precompiled_engine_armv7.mk
 endif
 
 format:
@@ -38,7 +38,7 @@ format:
 	    --align-reference=name --convert-tabs --attach-namespaces \
 	    --max-code-length=110 --max-instatement-indent=120 --pad-header \
 	    --pad-oper \
-	    embedder*.c
+	    embedder_drm.c
 
 clean:
 	rm -rf $(PREFIX)/libflutter_engine.so flutter_embedder.h $(PREFIX)/flutter_embedder *.zip

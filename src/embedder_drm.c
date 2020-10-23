@@ -1,405 +1,1370 @@
+#define  _GNU_SOURCE
 
-#include <assert.h>
-#include <poll.h>
-#include <sys/eventfd.h>
-#include <string.h>
+#include <ctype.h>
+#include <features.h>
+#include <dlfcn.h>
+#include <fcntl.h>
 #include <stdio.h>
+#include <stdint.h>
+#include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <time.h>
-#include <errno.h>
+#include <stdbool.h>
 #include <pthread.h>
+#include <signal.h>
+#include <errno.h>
+#include <linux/input.h>
+#include <math.h>
+#include <limits.h>
+#include <float.h>
+#include <assert.h>
+#include <time.h>
+#include <glob.h>
 
-#include <GL/glew.h>
-#include <GLFW/glfw3.h>
+#include <xf86drm.h>
+#include <xf86drmMode.h>
+#include <drm_fourcc.h>
+#include <gbm.h>
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
 
-#include "erlcmd.h"
+#include <limits.h>
+#include <linux/input.h>
+#include <stdbool.h>
+#include <math.h>
+#include <xf86drm.h>
+#include <xf86drmMode.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "flutter_embedder.h"
 
 #define DEBUG
 
 #ifdef DEBUG
-// #define LOG_PATH "log.txt"
+// #define LOG_PATH "/tmp/log.txt"
 #define log_location stderr
-#define debug(...) do { fprintf(log_location, __VA_ARGS__); fprintf(log_location, "\r\n"); fflush(log_location); } while(0)
+#define debug(...) do { fprintf(log_location, __VA_ARGS__); fprintf(log_location, "\r"); fflush(log_location); } while(0)
 #define error(...) do { debug(__VA_ARGS__); } while (0)
 #else
 #define debug(...)
-#define error(...) do { fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } while(0)
+#define error(...) do { fprintf(stderr, __VA_ARGS__); fprintf(stderr, ""); } while(0)
 #endif
 
-// This value is calculated after the window is created.
-static double g_pixelRatio = 1.0;
-static const size_t kInitialWindowWidth = 800;
-static const size_t kInitialWindowHeight = 600;
+#define EGL_PLATFORM_GBM_KHR    0x31D7
+
+enum device_orientation {
+    kPortraitUp, kLandscapeLeft, kPortraitDown, kLandscapeRight
+};
+
+#define ANGLE_FROM_ORIENTATION(o) \
+    ((o) == kPortraitUp ? 0 : \
+     (o) == kLandscapeLeft ? 90 : \
+     (o) == kPortraitDown ? 180 : \
+     (o) == kLandscapeRight ? 270 : 0)
+
+#define FLUTTER_ROTATION_TRANSFORMATION(deg) ((FlutterTransformation) \
+            {.scaleX = cos(((double) (deg))/180.0*M_PI), .skewX  = -sin(((double) (deg))/180.0*M_PI), .transX = 0, \
+             .skewY  = sin(((double) (deg))/180.0*M_PI), .scaleY = cos(((double) (deg))/180.0*M_PI),  .transY = 0, \
+             .pers0  = 0,                   .pers1  = 0,                    .pers2  = 1})
+
+
+typedef enum {
+    kVBlankRequest,
+    kVBlankReply,
+    kUpdateOrientation,
+    kSendPlatformMessage,
+    kRespondToPlatformMessage,
+    kFlutterTask
+} engine_task_type;
+
+struct engine_task {
+    struct engine_task *next;
+    engine_task_type type;
+    union {
+        FlutterTask task;
+        struct {
+            uint64_t vblank_ns;
+            intptr_t baton;
+        };
+        enum device_orientation orientation;
+        struct {
+            char *channel;
+            const FlutterPlatformMessageResponseHandle *responsehandle;
+            size_t message_size;
+            uint8_t *message;
+        };
+    };
+    uint64_t target_time;
+};
+
+static inline void *memdup(const void *restrict src, const size_t n)
+{
+    void *__restrict__ dest;
+
+    if ((src == NULL) || (n == 0)) return NULL;
+
+    dest = malloc(n);
+    if (dest == NULL) return NULL;
+
+    return memcpy(dest, src, n);
+}
+
+struct drm_fb {
+    struct gbm_bo *bo;
+    uint32_t fb_id;
+};
+
+struct pageflip_data {
+    struct gbm_bo *releaseable_bo;
+    intptr_t next_baton;
+};
+
+void post_platform_task(struct engine_task *task);
+
+/// width & height of the display in pixels
+uint32_t width, height;
+
+/// physical width & height of the display in millimeters
+/// the physical size can only be queried for HDMI displays (and even then, most displays will
+///   probably return bogus values like 160mm x 90mm).
+/// for DSI displays, the physical size of the official 7-inch display will be set in init_display.
+/// init_display will only update width_mm and height_mm if they are set to zero, allowing you
+///   to hardcode values for you individual display.
+uint32_t width_mm = 0, height_mm = 0;
+uint32_t refresh_rate;
+
+/// The pixel ratio used by flutter.
+/// This is computed inside init_display using width_mm and height_mm.
+/// flutter only accepts pixel ratios >= 1.0
+/// init_display will only update this value if it is equal to zero,
+///   allowing you to hardcode values.
+double pixel_ratio = 0.0;
+
+/// The current device orientation.
+/// The initial device orientation is based on the width & height data from drm.
+enum device_orientation orientation;
+
+/// The angle between the initial device orientation and the current device orientation in degrees.
+/// (applied as a rotation to the flutter window in transformation_callback, and also
+/// is used to determine if width/height should be swapped when sending a WindowMetrics event to flutter)
+int rotation = 0;
+
+struct {
+    char device[PATH_MAX];
+    bool has_device;
+    int fd;
+    uint32_t connector_id;
+    drmModeModeInfo *mode;
+    uint32_t crtc_id;
+    size_t crtc_index;
+    struct gbm_bo *previous_bo;
+    drmEventContext evctx;
+    bool disable_vsync;
+} drm = {0};
+
+struct {
+    struct gbm_device  *device;
+    struct gbm_surface *surface;
+    uint32_t            format;
+    uint64_t            modifier;
+} gbm = {0};
+
+struct {
+    EGLDisplay display;
+    EGLConfig  config;
+    EGLContext context;
+    EGLSurface surface;
+
+    bool       modifiers_supported;
+    char      *renderer;
+
+    EGLDisplay (*eglGetPlatformDisplayEXT)(EGLenum platform, void *native_display, const EGLint *attrib_list);
+    EGLSurface (*eglCreatePlatformWindowSurfaceEXT)(EGLDisplay dpy, EGLConfig config, void *native_window,
+                                                    const EGLint *attrib_list);
+    EGLSurface (*eglCreatePlatformPixmapSurfaceEXT)(EGLDisplay dpy, EGLConfig config, void *native_pixmap,
+                                                    const EGLint *attrib_list);
+} egl = {0};
+
+struct {
+    char asset_bundle_path[240];
+    char kernel_blob_path[256];
+    char executable_path[256];
+    char icu_data_path[256];
+    FlutterRendererConfig renderer_config;
+    FlutterProjectArgs args;
+    int engine_argc;
+    const char *const *engine_argv;
+} flutter = {0};
+
+// Flutter VSync handles
+// stored as a ring buffer. i_batons is the offset of the first baton (0 - 63)
+// scheduled_frames - 1 is the number of total number of stored batons.
+// (If 5 vsync events were asked for by the flutter engine, you only need to store 4 batons.
+//  The baton for the first one that was asked for would've been returned immediately.)
+intptr_t batons[64];
+uint8_t i_batons = 0;
+int scheduled_frames = 0;
+pthread_t io_thread_id;
+pthread_t platform_thread_id;
+
+struct engine_task tasklist = {
+    .next = NULL,
+    .type = kFlutterTask,
+    .target_time = 0,
+    .task = {.runner = NULL, .task = 0}
+};
+
+pthread_mutex_t tasklist_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t  task_added = PTHREAD_COND_INITIALIZER;
+
 FlutterEngine engine;
+_Atomic bool  engine_running = false;
 
-#define NUM_POLLFD_ENTRIES 32
-static struct erlcmd handler;
-static struct pollfd fdset[NUM_POLLFD_ENTRIES];
-static int num_pollfds = 0;
-
-static_assert(FLUTTER_ENGINE_VERSION == 1,
-              "This Flutter Embedder was authored against the stable Flutter "
-              "API at version 1. There has been a serious breakage in the "
-              "API. Please read the ChangeLog and take appropriate action "
-              "before updating this assertion");
-
-void GLFWcursorPositionCallbackAtPhase(GLFWwindow *window,
-                                       FlutterPointerPhase phase,
-                                       double x,
-                                       double y)
+bool make_current(void *userdata)
 {
-    FlutterPointerEvent event = {};
-    event.struct_size = sizeof(event);
-    event.phase = phase;
-    event.x = x * g_pixelRatio;
-    event.y = y * g_pixelRatio;
-    event.timestamp = FlutterEngineGetCurrentTime();
-    FlutterEngineSendPointerEvent(glfwGetWindowUserPointer(window), &event, 1);
-}
-
-void GLFWcursorPositionCallback(GLFWwindow *window, double x, double y)
-{
-    GLFWcursorPositionCallbackAtPhase(window, kMove, x, y);
-}
-
-void GLFWmouseButtonCallback(GLFWwindow *window,
-                             int key,
-                             int action,
-                             int mods)
-{
-    if (key == GLFW_MOUSE_BUTTON_1 && action == GLFW_PRESS) {
-        double x, y;
-        glfwGetCursorPos(window, &x, &y);
-        GLFWcursorPositionCallbackAtPhase(window, kDown, x, y);
-        glfwSetCursorPosCallback(window, GLFWcursorPositionCallback);
+    if (eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context) != EGL_TRUE) {
+        debug("make_current: could not make the context current.");
+        return false;
     }
 
-    if (key == GLFW_MOUSE_BUTTON_1 && action == GLFW_RELEASE) {
-        double x, y;
-        glfwGetCursorPos(window, &x, &y);
-        GLFWcursorPositionCallbackAtPhase(window, kUp, x, y);
-        glfwSetCursorPosCallback(window, NULL);
+    return true;
+}
+
+bool clear_current(void *userdata)
+{
+    if (eglMakeCurrent(egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) != EGL_TRUE) {
+        debug("clear_current: could not clear the current context.");
+        return false;
     }
+
+    return true;
 }
 
-static void GLFWKeyCallback(GLFWwindow *window,
-                            int key,
-                            int scancode,
-                            int action,
-                            int mods)
+void pageflip_handler(int fd, unsigned int frame, unsigned int sec, unsigned int usec, void *userdata)
 {
-    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
-        glfwSetWindowShouldClose(window, GLFW_TRUE);
+    FlutterEngineTraceEventInstant("pageflip");
+    post_platform_task(&(struct engine_task) {
+        .type = kVBlankReply,
+        .target_time = 0,
+        .vblank_ns = sec * 1000000000ull + usec * 1000ull,
+    });
+}
+
+void drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
+{
+    struct drm_fb *fb = data;
+
+    if (fb->fb_id)
+        drmModeRmFB(drm.fd, fb->fb_id);
+
+    free(fb);
+}
+
+struct drm_fb *drm_fb_get_from_bo(struct gbm_bo *bo)
+{
+    uint32_t width, height, format, strides[4] = {0}, handles[4] = {0}, offsets[4] = {0}, flags = 0;
+    int ok = -1;
+
+    // if the buffer object already has some userdata associated with it,
+    //   it's the framebuffer we allocated.
+    struct drm_fb *fb = gbm_bo_get_user_data(bo);
+    if (fb) return fb;
+
+    // if there's no framebuffer for the bo, we need to create one.
+    fb = calloc(1, sizeof(struct drm_fb));
+    fb->bo = bo;
+
+    width = gbm_bo_get_width(bo);
+    height = gbm_bo_get_height(bo);
+    format = gbm_bo_get_format(bo);
+
+    uint64_t modifiers[4] = {0};
+    modifiers[0] = gbm_bo_get_modifier(bo);
+    const int num_planes = gbm_bo_get_plane_count(bo);
+
+    for (int i = 0; i < num_planes; i++) {
+        strides[i] = gbm_bo_get_stride_for_plane(bo, i);
+        handles[i] = gbm_bo_get_handle(bo).u32;
+        offsets[i] = gbm_bo_get_offset(bo, i);
+        modifiers[i] = modifiers[0];
     }
+
+    if (modifiers[0]) {
+        flags = DRM_MODE_FB_MODIFIERS;
+    }
+
+    ok = drmModeAddFB2WithModifiers(drm.fd, width, height, format, handles, strides, offsets, modifiers,
+                                    &fb->fb_id, flags);
+
+    if (ok) {
+        if (flags)
+            debug("drm_fb_get_from_bo: modifiers failed!");
+
+        memcpy(handles, (uint32_t [4]) {
+            gbm_bo_get_handle(bo).u32, 0, 0, 0
+        }, 16);
+
+        memcpy(strides, (uint32_t [4]) {
+            gbm_bo_get_stride(bo), 0, 0, 0
+        }, 16);
+
+        memset(offsets, 0, 16);
+
+        ok = drmModeAddFB2(drm.fd, width, height, format, handles, strides, offsets, &fb->fb_id, 0);
+    }
+
+    if (ok) {
+        debug("drm_fb_get_from_bo: failed to create fb: %s\n", strerror(errno));
+        free(fb);
+        return NULL;
+    }
+
+    gbm_bo_set_user_data(bo, fb, drm_fb_destroy_callback);
+
+    return fb;
 }
 
-void GLFWwindowSizeCallback(GLFWwindow *window, int width, int height)
+bool present(void *userdata)
 {
-    FlutterWindowMetricsEvent event = {};
-    event.struct_size = sizeof(event);
-    event.width = width * g_pixelRatio;
-    event.height = height * g_pixelRatio;
-    event.pixel_ratio = g_pixelRatio;
-    FlutterEngineSendWindowMetricsEvent(glfwGetWindowUserPointer(window), &event);
-}
+    fd_set fds;
+    struct gbm_bo *next_bo;
+    struct drm_fb *fb;
+    int ok;
 
-size_t erlcmd_uid = 1;
+    FlutterEngineTraceEventDurationBegin("present");
 
-typedef struct erlcmd_platform_message {
-    const FlutterPlatformMessageResponseHandle *response_handle;
-    uint8_t erlcmd_handle;
-    uint16_t channel_length;
-    const char *channel;
-    uint16_t message_length;
-    const uint8_t *message;
-    bool dispatched;
-    struct erlcmd_platform_message *next;
-} erlcmd_platform_message_t;
+    eglSwapBuffers(egl.display, egl.surface);
+    next_bo = gbm_surface_lock_front_buffer(gbm.surface);
+    fb = drm_fb_get_from_bo(next_bo);
 
-erlcmd_platform_message_t *head = NULL;
-pthread_mutex_t lock;
-
-static void on_platform_message(
-    const FlutterPlatformMessage *message,
-    void *userdata
-)
-{
-
-    pthread_mutex_lock(&lock);
-    uint16_t channel_length = strlen(message->channel);
-    if (head) {
-        erlcmd_platform_message_t *current = head;
-        while (current->next != NULL) {
-            current = current->next;
+    // workaround for #38
+    if (!drm.disable_vsync) {
+        ok = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id, DRM_MODE_PAGE_FLIP_EVENT, drm.previous_bo);
+        if (ok) {
+            perror("failed to queue page flip");
+            return false;
         }
-
-        current->next = malloc(sizeof(erlcmd_platform_message_t));
-        memset(current->next, 0, sizeof(erlcmd_platform_message_t));
-
-        if (!current->next)
-            exit(EXIT_FAILURE);
-
-        current->next->next = NULL;
-        current->next->dispatched = false;
-        current->next->erlcmd_handle = erlcmd_uid++;
-        current->next->response_handle = message->response_handle;
-        current->next->channel = message->channel;
-        current->next->channel_length = channel_length;
-        current->next->message = message->message;
-        current->next->message_length = message->message_size;
-        debug("adding node %lu -> %lu", current->erlcmd_handle, current->next->erlcmd_handle);
-
     } else {
-        head = malloc(sizeof(erlcmd_platform_message_t));
-        memset(head, 0, sizeof(erlcmd_platform_message_t));
-        if (!head)
-            exit(EXIT_FAILURE);
-        head->next = NULL;
-        head->dispatched = false;
-        head->erlcmd_handle = erlcmd_uid++;
-        head->response_handle = message->response_handle;
-        head->channel = message->channel;
-        head->channel_length = channel_length;
-        head->message = message->message;
-        head->message_length = message->message_size;
+        ok = drmModeSetCrtc(drm.fd, drm.crtc_id, fb->fb_id, 0, 0, &drm.connector_id, 1, drm.mode);
+        if (ok == -1) {
+            perror("failed swap buffers");
+            return false;
+        }
     }
-    debug("Creating head node %lu", head->erlcmd_handle);
 
-    pthread_mutex_unlock(&lock);
-    eventfd_write(fdset[1].fd, 1);
-}
+    gbm_surface_release_buffer(gbm.surface, drm.previous_bo);
+    drm.previous_bo = (struct gbm_bo *) next_bo;
 
-static bool runs_platform_tasks_on_current_thread(void *userdata)
-{
+    FlutterEngineTraceEventDurationEnd("present");
+
     return true;
 }
 
-static void on_post_flutter_task(
-    FlutterTask task,
-    uint64_t target_time,
-    void *userdata
-)
-{
-    FlutterEngineRunTask(engine, &task);
-    return;
-}
-
-static bool make_current(void *userdata)
-{
-    glfwMakeContextCurrent((GLFWwindow *)userdata);
-    glewInit();
-    return true;
-}
-
-static bool clear_current(void *userdata)
-{
-    glfwMakeContextCurrent((GLFWwindow *)userdata);
-    return true;
-}
-
-static bool present(void *userdata)
-{
-    glfwSwapBuffers((GLFWwindow *)userdata);
-    return true;
-}
-
-static uint32_t fbo_callback(void *userdata)
+uint32_t fbo_callback(void *userdata)
 {
     return 0;
 }
 
-bool RunFlutter(GLFWwindow *window,
-                const char *project_path,
-                const char *icudtl_path)
+void cut_word_from_string(char *string, char *word)
 {
-    FlutterRendererConfig config = {};
-    config.type = kOpenGL;
-    config.open_gl.struct_size = sizeof(config.open_gl);
-    config.open_gl.make_current = make_current;
-    config.open_gl.clear_current = clear_current;
-    config.open_gl.present = present;
-    config.open_gl.fbo_callback = fbo_callback;
+    size_t word_length = strlen(word);
+    char  *word_in_str = strstr(string, word);
 
-    FlutterTaskRunnerDescription custom_task_runner_description = {
-        .struct_size = sizeof(FlutterTaskRunnerDescription),
-        .user_data = NULL,
-        .runs_task_on_current_thread_callback = runs_platform_tasks_on_current_thread,
-        .post_task_callback = on_post_flutter_task
-    };
+    // check if the given word is surrounded by spaces in the string
+    if (word_in_str
+            && ((word_in_str == string) || (word_in_str[-1] == ' '))
+            && ((word_in_str[word_length] == 0) || (word_in_str[word_length] == ' '))
+       ) {
+        if (word_in_str[word_length] == ' ') word_length++;
 
-    FlutterCustomTaskRunners custom_task_runners = {
-        .struct_size = sizeof(FlutterCustomTaskRunners),
-        .platform_task_runner = &custom_task_runner_description
-    };
+        int i = 0;
+        do {
+            word_in_str[i] = word_in_str[i + word_length];
+        } while (word_in_str[i++ + word_length] != 0);
+    }
+}
 
-    FlutterProjectArgs args = {
-        .struct_size = sizeof(FlutterProjectArgs),
-        .assets_path = project_path,
-        .icu_data_path = icudtl_path,
-        .platform_message_callback = on_platform_message,
-        .custom_task_runners = &custom_task_runners
-    };
-    FlutterEngineResult result = FlutterEngineRun(FLUTTER_ENGINE_VERSION, &config, &args, window, &engine);
-    assert(result == kSuccess && engine != NULL);
+const GLubyte *hacked_glGetString(GLenum name)
+{
+    static GLubyte *extensions = NULL;
 
-    glfwSetWindowUserPointer(window, engine);
-    GLFWwindowSizeCallback(window, kInitialWindowWidth, kInitialWindowHeight);
+    if (name != GL_EXTENSIONS)
+        return glGetString(name);
+
+    if (extensions == NULL) {
+        GLubyte *orig_extensions = (GLubyte *) glGetString(GL_EXTENSIONS);
+
+        extensions = malloc(strlen((const char *)orig_extensions) + 1);
+        if (!extensions) {
+            debug("Could not allocate memory for modified GL_EXTENSIONS string");
+            return NULL;
+        }
+
+        strcpy((char *)extensions, (const char *)orig_extensions);
+
+        /*
+            * working (apparently)
+            */
+        //cut_word_from_string(extensions, "GL_EXT_blend_minmax");
+        //cut_word_from_string(extensions, "GL_EXT_multi_draw_arrays");
+        //cut_word_from_string(extensions, "GL_EXT_texture_format_BGRA8888");
+        //cut_word_from_string(extensions, "GL_OES_compressed_ETC1_RGB8_texture");
+        //cut_word_from_string(extensions, "GL_OES_depth24");
+        //cut_word_from_string(extensions, "GL_OES_texture_npot");
+        //cut_word_from_string(extensions, "GL_OES_vertex_half_float");
+        //cut_word_from_string(extensions, "GL_OES_EGL_image");
+        //cut_word_from_string(extensions, "GL_OES_depth_texture");
+        //cut_word_from_string(extensions, "GL_AMD_performance_monitor");
+        //cut_word_from_string(extensions, "GL_OES_EGL_image_external");
+        //cut_word_from_string(extensions, "GL_EXT_occlusion_query_boolean");
+        //cut_word_from_string(extensions, "GL_KHR_texture_compression_astc_ldr");
+        //cut_word_from_string(extensions, "GL_EXT_compressed_ETC1_RGB8_sub_texture");
+        //cut_word_from_string(extensions, "GL_EXT_draw_elements_base_vertex");
+        //cut_word_from_string(extensions, "GL_EXT_texture_border_clamp");
+        //cut_word_from_string(extensions, "GL_OES_draw_elements_base_vertex");
+        //cut_word_from_string(extensions, "GL_OES_texture_border_clamp");
+        //cut_word_from_string(extensions, "GL_KHR_texture_compression_astc_sliced_3d");
+        //cut_word_from_string(extensions, "GL_MESA_tile_raster_order");
+
+        /*
+        * should be working, but isn't
+        */
+        cut_word_from_string((char *)extensions, "GL_EXT_map_buffer_range");
+
+        /*
+        * definitely broken
+        */
+        cut_word_from_string((char *)extensions, "GL_OES_element_index_uint");
+        cut_word_from_string((char *)extensions, "GL_OES_fbo_render_mipmap");
+        cut_word_from_string((char *)extensions, "GL_OES_mapbuffer");
+        cut_word_from_string((char *)extensions, "GL_OES_rgb8_rgba8");
+        cut_word_from_string((char *)extensions, "GL_OES_stencil8");
+        cut_word_from_string((char *)extensions, "GL_OES_texture_3D");
+        cut_word_from_string((char *)extensions, "GL_OES_packed_depth_stencil");
+        cut_word_from_string((char *)extensions, "GL_OES_get_program_binary");
+        cut_word_from_string((char *)extensions, "GL_APPLE_texture_max_level");
+        cut_word_from_string((char *)extensions, "GL_EXT_discard_framebuffer");
+        cut_word_from_string((char *)extensions, "GL_EXT_read_format_bgra");
+        cut_word_from_string((char *)extensions, "GL_EXT_frag_depth");
+        cut_word_from_string((char *)extensions, "GL_NV_fbo_color_attachments");
+        cut_word_from_string((char *)extensions, "GL_OES_EGL_sync");
+        cut_word_from_string((char *)extensions, "GL_OES_vertex_array_object");
+        cut_word_from_string((char *)extensions, "GL_EXT_unpack_subimage");
+        cut_word_from_string((char *)extensions, "GL_NV_draw_buffers");
+        cut_word_from_string((char *)extensions, "GL_NV_read_buffer");
+        cut_word_from_string((char *)extensions, "GL_NV_read_depth");
+        cut_word_from_string((char *)extensions, "GL_NV_read_depth_stencil");
+        cut_word_from_string((char *)extensions, "GL_NV_read_stencil");
+        cut_word_from_string((char *)extensions, "GL_EXT_draw_buffers");
+        cut_word_from_string((char *)extensions, "GL_KHR_debug");
+        cut_word_from_string((char *)extensions, "GL_OES_required_internalformat");
+        cut_word_from_string((char *)extensions, "GL_OES_surfaceless_context");
+        cut_word_from_string((char *)extensions, "GL_EXT_separate_shader_objects");
+        cut_word_from_string((char *)extensions, "GL_KHR_context_flush_control");
+        cut_word_from_string((char *)extensions, "GL_KHR_no_error");
+        cut_word_from_string((char *)extensions, "GL_KHR_parallel_shader_compile");
+    }
+
+    return extensions;
+}
+
+void *proc_resolver(void *userdata, const char *name)
+{
+    static int is_VC4 = -1;
+    void      *address;
+
+    /*
+     * The mesa V3D driver reports some OpenGL ES extensions as supported and working
+     * even though they aren't. hacked_glGetString is a workaround for this, which will
+     * cut out the non-working extensions from the list of supported extensions.
+     */
+
+    if (name == NULL)
+        return NULL;
+
+    // first detect if we're running on a VideoCore 4 / using the VC4 driver.
+    if ((is_VC4 == -1) && (is_VC4 = strcmp(egl.renderer, "VC4 V3D 2.1") == 0))
+        printf( "detected VideoCore IV as underlying graphics chip, and VC4 as the driver.\n"
+                "Reporting modified GL_EXTENSIONS string that doesn't contain non-working extensions.");
+
+    // if we do, and the symbol to resolve is glGetString, we return our hacked_glGetString.
+    if (is_VC4 && (strcmp(name, "glGetString") == 0))
+        return hacked_glGetString;
+
+    if ((address = dlsym(RTLD_DEFAULT, name)) || (address = eglGetProcAddress(name)))
+        return address;
+
+    debug("proc_resolver: could not resolve symbol \"%s\"\n", name);
+
+    return NULL;
+}
+
+void on_platform_message(const FlutterPlatformMessage *message, void *userdata)
+{
+    debug("platform message stub");
+}
+
+void vsync_callback(void *userdata, intptr_t baton)
+{
+    post_platform_task(&(struct engine_task) {
+        .type = kVBlankRequest,
+        .target_time = 0,
+        .baton = baton
+    });
+}
+
+FlutterTransformation transformation_callback(void *userdata)
+{
+    // report a transform based on the current device orientation.
+    static bool _transformsInitialized = false;
+    static FlutterTransformation rotate0, rotate90, rotate180, rotate270;
+
+    static int counter = 0;
+
+    if (!_transformsInitialized) {
+        rotate0 = (FlutterTransformation) {
+            .scaleX = 1, .skewX  = 0, .transX = 0,
+            .skewY  = 0, .scaleY = 1, .transY = 0,
+            .pers0  = 0, .pers1  = 0, .pers2  = 1
+        };
+
+        rotate90 = FLUTTER_ROTATION_TRANSFORMATION(90);
+        rotate90.transX = width;
+        rotate180 = FLUTTER_ROTATION_TRANSFORMATION(180);
+        rotate180.transX = width;
+        rotate180.transY = height;
+        rotate270 = FLUTTER_ROTATION_TRANSFORMATION(270);
+        rotate270.transY = height;
+
+        _transformsInitialized = true;
+    }
+
+    if (rotation == 0) return rotate0;
+    else if (rotation == 90) return rotate90;
+    else if (rotation == 180) return rotate180;
+    else if (rotation == 270) return rotate270;
+    else return rotate0;
+}
+
+/************************
+ * PLATFORM TASK-RUNNER *
+ ************************/
+bool init_message_loop()
+{
+    platform_thread_id = pthread_self();
+    return true;
+}
+
+bool run_message_loop(void)
+{
+    struct timespec abstargetspec;
+    uint64_t currenttime, abstarget;
+    intptr_t baton;
+
+    while (true) {
+        pthread_mutex_lock(&tasklist_lock);
+
+        // wait for a task to be inserted into the list
+        while (tasklist.next == NULL)
+            pthread_cond_wait(&task_added, &tasklist_lock);
+
+        // wait for a task to be ready to be run
+        while (tasklist.target_time > (currenttime = FlutterEngineGetCurrentTime())) {
+            clock_gettime(CLOCK_REALTIME, &abstargetspec);
+            abstarget = abstargetspec.tv_nsec + abstargetspec.tv_sec * 1000000000ull - currenttime;
+            abstargetspec.tv_nsec = abstarget % 1000000000;
+            abstargetspec.tv_sec =  abstarget / 1000000000;
+
+            pthread_cond_timedwait(&task_added, &tasklist_lock, &abstargetspec);
+        }
+
+        struct engine_task *task = tasklist.next;
+        tasklist.next = tasklist.next->next;
+
+        pthread_mutex_unlock(&tasklist_lock);
+        if (task->type == kVBlankRequest || task->type == kVBlankReply) {
+            intptr_t baton;
+            bool     has_baton = false;
+            uint64_t ns;
+
+            if (task->type == kVBlankRequest) {
+                if (scheduled_frames == 0) {
+                    baton = task->baton;
+                    has_baton = true;
+                    drmCrtcGetSequence(drm.fd, drm.crtc_id, NULL, &ns);
+                } else {
+                    batons[(i_batons + (scheduled_frames - 1)) & 63] = task->baton;
+                }
+                scheduled_frames++;
+            } else if (task->type == kVBlankReply) {
+                if (scheduled_frames > 1) {
+                    baton = batons[i_batons];
+                    has_baton = true;
+                    i_batons = (i_batons + 1) & 63;
+                    ns = task->vblank_ns;
+                }
+                scheduled_frames--;
+            }
+
+            if (has_baton) {
+                FlutterEngineOnVsync(engine, baton, ns, ns + (1000000000ull / refresh_rate));
+            }
+
+        } else if (task->type == kUpdateOrientation) {
+            rotation += ANGLE_FROM_ORIENTATION(task->orientation) - ANGLE_FROM_ORIENTATION(orientation);
+            if (rotation < 0) rotation += 360;
+            else if (rotation >= 360) rotation -= 360;
+
+            orientation = task->orientation;
+
+            // send updated window metrics to flutter
+            FlutterEngineSendWindowMetricsEvent(engine, &(const FlutterWindowMetricsEvent) {
+                .struct_size = sizeof(FlutterWindowMetricsEvent),
+
+                // we send swapped width/height if the screen is rotated 90 or 270 degrees.
+                .width = (rotation == 0) || (rotation == 180) ? width : height,
+                .height = (rotation == 0) || (rotation == 180) ? height : width,
+                .pixel_ratio = pixel_ratio
+            });
+
+        } else if (task->type == kSendPlatformMessage || task->type == kRespondToPlatformMessage) {
+            if (task->type == kSendPlatformMessage) {
+                FlutterEngineSendPlatformMessage(
+                    engine,
+                &(const FlutterPlatformMessage) {
+                    .struct_size = sizeof(FlutterPlatformMessage),
+                    .channel = task->channel,
+                    .message = task->message,
+                    .message_size = task->message_size,
+                    .response_handle = task->responsehandle
+                }
+                );
+
+                free(task->channel);
+            } else if (task->type == kRespondToPlatformMessage) {
+                FlutterEngineSendPlatformMessageResponse(
+                    engine,
+                    task->responsehandle,
+                    task->message,
+                    task->message_size
+                );
+            }
+
+            free(task->message);
+        } else if (FlutterEngineRunTask(engine, &task->task) != kSuccess) {
+            debug("Error running platform task");
+            return false;
+        };
+
+        free(task);
+    }
 
     return true;
 }
 
-bool isCallerDown()
+void post_platform_task(struct engine_task *task)
 {
-    struct pollfd ufd;
-    memset(&ufd, 0, sizeof ufd);
-    ufd.fd     = ERLCMD_READ_FD;
-    ufd.events = POLLIN;
-    if (poll(&ufd, 1, 0) < 0)
-        return true;
-    return ufd.revents & POLLHUP;
+    struct engine_task *to_insert;
+
+    to_insert = malloc(sizeof(struct engine_task));
+    if (!to_insert) return;
+
+    memcpy(to_insert, task, sizeof(struct engine_task));
+    pthread_mutex_lock(&tasklist_lock);
+    struct engine_task *this = &tasklist;
+    while ((this->next) != NULL && (to_insert->target_time > this->next->target_time))
+        this = this->next;
+
+    to_insert->next = this->next;
+    this->next = to_insert;
+    pthread_mutex_unlock(&tasklist_lock);
+    pthread_cond_signal(&task_added);
 }
 
-static void handle_from_elixir(const uint8_t *buffer, size_t length, void *cookie)
+void flutter_post_platform_task(FlutterTask task, uint64_t target_time, void *userdata)
 {
-    debug("handle_from_elixir: len=%lu, handle=%u", length, buffer[2]);
-    erlcmd_platform_message_t *previous = head;
-    erlcmd_platform_message_t *current = head;
-    while (current) {
-        if (current->erlcmd_handle == buffer[2]) {
-            debug("responding to %lu", current->erlcmd_handle);
-            FlutterEngineSendPlatformMessageResponse(engine,
-                                                     (const FlutterPlatformMessageResponseHandle *)current->response_handle, &buffer[3], length - sizeof(uint8_t));
-            previous->next = current->next;
-            free(current);
-            break;
-        } else {
-            previous = current;
-        }
-        current = current->next;
+    post_platform_task(&(struct engine_task) {
+        .type = kFlutterTask,
+        .task = task,
+        .target_time = target_time
+    });
+}
+
+bool runs_platform_tasks_on_current_thread(void *userdata)
+{
+    return pthread_equal(pthread_self(), platform_thread_id) != 0;
+}
+
+bool init_paths(void)
+{
+#define PATH_EXISTS(path) (access((path),R_OK)==0)
+
+    if (!PATH_EXISTS(flutter.asset_bundle_path)) {
+        debug("Asset Bundle Directory \"%s\" does not exist\n", flutter.asset_bundle_path);
+        return false;
     }
+
+    snprintf(flutter.kernel_blob_path, sizeof(flutter.kernel_blob_path), "%s/kernel_blob.bin",
+             flutter.asset_bundle_path);
+    if (!PATH_EXISTS(flutter.kernel_blob_path)) {
+        debug("Kernel blob does not exist inside Asset Bundle Directory.");
+        return false;
+    }
+
+    if (!PATH_EXISTS(flutter.icu_data_path)) {
+        debug("ICU Data file not find at %s.\n", flutter.icu_data_path);
+        return false;
+    }
+    return true;
+#undef PATH_EXISTS
 }
 
-void *myThreadFun(void *vargp)
+bool init_display(void)
 {
-    for (;;) {
-        for (int i = 0; i < num_pollfds; i++)
-            fdset[i].revents = 0;
-        int rc = poll(fdset, num_pollfds, 0);
-        if (rc < 0) {
-            // Retry if EINTR
-            if (errno == EINTR)
-                continue;
+    /**********************
+     * DRM INITIALIZATION *
+     **********************/
 
-            error("poll failed with %d", errno);
+    drmModeRes *resources = NULL;
+    drmModeConnector *connector;
+    drmModeEncoder *encoder = NULL;
+    int i, ok, area;
 
+    if (!drm.has_device) {
+        debug("Finding a suitable DRM device, since none is given...");
+        drmDevicePtr devices[64] = { NULL };
+        int num_devices, fd = -1;
+
+        num_devices = drmGetDevices2(0, devices, sizeof(devices) / sizeof(drmDevicePtr));
+        if (num_devices < 0) {
+            debug("could not query drm device list: %s\n", strerror(-num_devices));
+            return false;
         }
 
-        if (fdset[0].revents & (POLLIN | POLLHUP))
-            erlcmd_process(&handler);
+        debug("looking for a suitable DRM device from %d available DRM devices...\n", num_devices);
+        for (i = 0; i < num_devices; i++) {
+            drmDevicePtr device = devices[i];
 
-        if (fdset[1].revents & (POLLIN | POLLHUP)) {
-            pthread_mutex_lock(&lock);
-            eventfd_t event;
-            eventfd_read(fdset[1].fd, &event);
+            debug("  devices[%d]: \n", i);
 
-            erlcmd_platform_message_t *current = head;
-            while (current != NULL) {
-                if (!current->dispatched) {
-                    // debug("checking %lu", current->erlcmd_handle);
-                    size_t buffer_length = sizeof(uint16_t) + // erlcmd length packet
-                                           sizeof(uint8_t) + // handle
-                                           sizeof(uint16_t) + // channel_length
-                                           current->channel_length + // channel
-                                           sizeof(uint16_t) + // message_length
-                                           current->message_length;
-                    uint8_t buffer[buffer_length];
-                    buffer[0] = 0;
-                    buffer[1] = 0; // erlcmd popultaes this.
-                    buffer[2] = current->erlcmd_handle;
-                    memcpy(&buffer[3], &current->channel_length, sizeof(uint16_t)); // 3&4 = channel_length
-                    memcpy(&buffer[5], current->channel, current->channel_length); // channel
-                    memcpy(&buffer[5 + current->channel_length], &current->message_length, sizeof(uint16_t));
-                    memcpy(&buffer[5 + current->channel_length + sizeof(uint16_t)], current->message, current->message_length);
-                    erlcmd_send(buffer, buffer_length);
-                    current->dispatched = true;
+            debug("    available nodes: ");
+            if (device->available_nodes & (1 << DRM_NODE_PRIMARY)) debug("DRM_NODE_PRIMARY, ");
+            if (device->available_nodes & (1 << DRM_NODE_CONTROL)) debug("DRM_NODE_CONTROL, ");
+            if (device->available_nodes & (1 << DRM_NODE_RENDER))  debug("DRM_NODE_RENDER");
+            debug("");
+
+            for (int j = 0; j < DRM_NODE_MAX; j++) {
+                if (device->available_nodes & (1 << j)) {
+                    debug("    nodes[%s] = \"%s\"\n",
+                          j == DRM_NODE_PRIMARY ? "DRM_NODE_PRIMARY" :
+                          j == DRM_NODE_CONTROL ? "DRM_NODE_CONTROL" :
+                          j == DRM_NODE_RENDER  ? "DRM_NODE_RENDER" : "unknown",
+                          device->nodes[j]
+                         );
                 }
-                current = current->next;
             }
 
-            // debug("why won't this packet go thru??????");
-            // uint8_t buffer[4] = {0, 0, 'a', 'b'};
-            // erlcmd_send(buffer, 4);
-            pthread_mutex_unlock(&lock);
+            debug("    bustype: %s\n",
+                  device->bustype == DRM_BUS_PCI ? "DRM_BUS_PCI" :
+                  device->bustype == DRM_BUS_USB ? "DRM_BUS_USB" :
+                  device->bustype == DRM_BUS_PLATFORM ? "DRM_BUS_PLATFORM" :
+                  device->bustype == DRM_BUS_HOST1X ? "DRM_BUS_HOST1X" :
+                  "unknown"
+                 );
+
+            if (device->bustype == DRM_BUS_PLATFORM) {
+                debug("    businfo.fullname: %s\n", device->businfo.platform->fullname);
+                // seems like deviceinfo.platform->compatible is not really used.
+                //debug("    deviceinfo.compatible: %s\n", device->deviceinfo.platform->compatible);
+            }
+
+            // we want a device that's DRM_NODE_PRIMARY and that we can call a drmModeGetResources on.
+            if (drm.has_device) continue;
+            if (!(device->available_nodes & (1 << DRM_NODE_PRIMARY))) continue;
+
+            debug("    opening DRM device candidate at \"%s\"...\n", device->nodes[DRM_NODE_PRIMARY]);
+            fd = open(device->nodes[DRM_NODE_PRIMARY], O_RDWR);
+            if (fd < 0) {
+                debug("      could not open DRM device candidate at \"%s\": %s\n", device->nodes[DRM_NODE_PRIMARY],
+                      strerror(errno));
+                continue;
+            }
+
+            debug("    getting resources of DRM device candidate at \"%s\"...\n", device->nodes[DRM_NODE_PRIMARY]);
+            resources = drmModeGetResources(fd);
+            if (resources == NULL) {
+                debug("      could not query DRM resources for DRM device candidate at \"%s\":",
+                      device->nodes[DRM_NODE_PRIMARY]);
+                if ((errno = EOPNOTSUPP) || (errno = EINVAL)) debug("doesn't look like a modeset device.");
+                else                                          debug("%s\n", strerror(errno));
+                close(fd);
+                continue;
+            }
+
+            // we found our DRM device.
+            debug("    chose \"%s\" as its DRM device.\n", device->nodes[DRM_NODE_PRIMARY]);
+            drm.fd = fd;
+            drm.has_device = true;
+            snprintf(drm.device, sizeof(drm.device) - 1, "%s", device->nodes[DRM_NODE_PRIMARY]);
         }
+
+        if (!drm.has_device) {
+            debug("couldn't find a usable DRM device");
+            return false;
+        }
+    }
+
+    if (drm.fd <= 0) {
+        debug("Opening DRM device...");
+        drm.fd = open(drm.device, O_RDWR);
+        if (drm.fd < 0) {
+            debug("Could not open DRM device");
+            return false;
+        }
+    }
+
+    if (!resources) {
+        debug("Getting DRM resources...");
+        resources = drmModeGetResources(drm.fd);
+        if (resources == NULL) {
+            if ((errno == EOPNOTSUPP) || (errno = EINVAL))
+                debug("%s doesn't look like a modeset device\n", drm.device);
+            else
+                debug("drmModeGetResources failed: %s\n", strerror(errno));
+
+            return false;
+        }
+    }
+
+    debug("Finding a connected connector from %d available connectors...\n", resources->count_connectors);
+    connector = NULL;
+    for (i = 0; i < resources->count_connectors; i++) {
+        drmModeConnector *conn = drmModeGetConnector(drm.fd, resources->connectors[i]);
+
+        debug("  connectors[%d]: connected? %s, type: 0x%02X%s, %umm x %umm\n",
+              i,
+              (conn->connection == DRM_MODE_CONNECTED) ? "yes" :
+              (conn->connection == DRM_MODE_DISCONNECTED) ? "no" : "unknown",
+              conn->connector_type,
+              (conn->connector_type == DRM_MODE_CONNECTOR_HDMIA) ? " (HDMI-A)" :
+              (conn->connector_type == DRM_MODE_CONNECTOR_HDMIB) ? " (HDMI-B)" :
+              (conn->connector_type == DRM_MODE_CONNECTOR_DSI) ? " (DSI)" :
+              (conn->connector_type == DRM_MODE_CONNECTOR_DisplayPort) ? " (DisplayPort)" : "",
+              conn->mmWidth, conn->mmHeight
+             );
+
+        if ((connector == NULL) && (conn->connection == DRM_MODE_CONNECTED)) {
+            connector = conn;
+
+            // only update the physical size of the display if the values
+            //   are not yet initialized / not set with a commandline option
+            if ((width_mm == 0) && (height_mm == 0)) {
+                if ((conn->mmWidth == 160) && (conn->mmHeight == 90)) {
+                    // if width and height is exactly 160mm x 90mm, the values are probably bogus.
+                    width_mm = 0;
+                    height_mm = 0;
+                } else if ((conn->connector_type == DRM_MODE_CONNECTOR_DSI) && (conn->mmWidth == 0)
+                           && (conn->mmHeight == 0)) {
+                    // if it's connected via DSI, and the width & height are 0,
+                    //   it's probably the official 7 inch touchscreen.
+                    width_mm = 155;
+                    height_mm = 86;
+                } else {
+                    width_mm = conn->mmWidth;
+                    height_mm = conn->mmHeight;
+                }
+            }
+        } else {
+            drmModeFreeConnector(conn);
+        }
+    }
+    if (!connector) {
+        debug("could not find a connected connector!");
+        return false;
+    }
+
+    debug("Choosing DRM mode from %d available modes...\n", connector->count_modes);
+    bool found_preferred = false;
+    for (i = 0, area = 0; i < connector->count_modes; i++) {
+        drmModeModeInfo *current_mode = &connector->modes[i];
+
+        debug("  modes[%d]: name: \"%s\", %ux%u%s, %uHz, type: %u, flags: %u\n",
+              i, current_mode->name, current_mode->hdisplay, current_mode->vdisplay,
+              (current_mode->flags & DRM_MODE_FLAG_INTERLACE) ? "i" : "p",
+              current_mode->vrefresh, current_mode->type, current_mode->flags
+             );
+
+        if (found_preferred) continue;
+
+        // we choose the highest resolution with the highest refresh rate, preferably non-interlaced (= progressive) here.
+        int current_area = current_mode->hdisplay * current_mode->vdisplay;
+        if (( current_area  > area) ||
+                ((current_area == area) && (current_mode->vrefresh >  refresh_rate)) ||
+                ((current_area == area) && (current_mode->vrefresh == refresh_rate)
+                 && ((current_mode->flags & DRM_MODE_FLAG_INTERLACE) == 0)) ||
+                ( current_mode->type & DRM_MODE_TYPE_PREFERRED)) {
+
+            drm.mode = current_mode;
+            width = current_mode->hdisplay;
+            height = current_mode->vdisplay;
+            refresh_rate = current_mode->vrefresh;
+            area = current_area;
+            orientation = width >= height ? kLandscapeLeft : kPortraitUp;
+
+            // if the preferred DRM mode is bogus, we're screwed.
+            if (current_mode->type & DRM_MODE_TYPE_PREFERRED) {
+                debug("    this mode is preferred by DRM. (DRM_MODE_TYPE_PREFERRED)");
+                found_preferred = true;
+            }
+        }
+    }
+
+    if (!drm.mode) {
+        debug("could not find a suitable DRM mode!");
+        return false;
+    }
+
+    // calculate the pixel ratio
+    if (pixel_ratio == 0.0) {
+        if ((width_mm == 0) || (height_mm == 0)) {
+            pixel_ratio = 1.0;
+        } else {
+            pixel_ratio = (10.0 * width) / (width_mm * 38.0);
+            if (pixel_ratio < 1.0) pixel_ratio = 1.0;
+        }
+    }
+
+    debug("Display properties:\n  %u x %u, %uHz\n  %umm x %umm\n  pixel_ratio = %f\n", width, height,
+          refresh_rate, width_mm, height_mm, pixel_ratio);
+
+    debug("Finding DRM encoder...");
+    for (i = 0; i < resources->count_encoders; i++) {
+        encoder = drmModeGetEncoder(drm.fd, resources->encoders[i]);
+        if (encoder->encoder_id == connector->encoder_id)
+            break;
+        drmModeFreeEncoder(encoder);
+        encoder = NULL;
+    }
+
+    if (encoder) {
+        drm.crtc_id = encoder->crtc_id;
+    } else {
+        debug("could not find a suitable crtc!");
+        return false;
+    }
+
+    for (i = 0; i < resources->count_crtcs; i++) {
+        if (resources->crtcs[i] == drm.crtc_id) {
+            drm.crtc_index = i;
+            break;
+        }
+    }
+
+    drmModeFreeResources(resources);
+
+    drm.connector_id = connector->connector_id;
+
+    /**********************
+     * GBM INITIALIZATION *
+     **********************/
+    debug("Creating GBM device");
+    gbm.device = gbm_create_device(drm.fd);
+    gbm.format = DRM_FORMAT_RGB565;
+    gbm.surface = NULL;
+    gbm.modifier = DRM_FORMAT_MOD_LINEAR;
+
+    gbm.surface = gbm_surface_create_with_modifiers(gbm.device, width, height, gbm.format, &gbm.modifier, 1);
+
+    if (!gbm.surface) {
+        if (gbm.modifier != DRM_FORMAT_MOD_LINEAR) {
+            debug("GBM Surface creation modifiers requested but not supported by GBM");
+            return false;
+        }
+        gbm.surface = gbm_surface_create(gbm.device, width, height, gbm.format,
+                                         GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+    }
+
+    if (!gbm.surface) {
+        debug("failed to create GBM surface");
+        return false;
+    }
+
+    /**********************
+     * EGL INITIALIZATION *
+     **********************/
+    EGLint major, minor;
+
+    static const EGLint context_attribs[] = {
+        EGL_CONTEXT_CLIENT_VERSION, 2,
+        EGL_NONE
+    };
+
+    const EGLint config_attribs[] = {
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_RED_SIZE, 1,
+        EGL_GREEN_SIZE, 1,
+        EGL_BLUE_SIZE, 1,
+        EGL_ALPHA_SIZE, 0,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_SAMPLES, 0,
+        EGL_NONE
+    };
+
+    const char *egl_exts_client, *egl_exts_dpy, *gl_exts;
+
+    debug("Querying EGL client extensions...");
+    egl_exts_client = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
+
+    egl.eglGetPlatformDisplayEXT = (void *) eglGetProcAddress("eglGetPlatformDisplayEXT");
+    debug("Getting EGL display for GBM device...");
+    if (egl.eglGetPlatformDisplayEXT) egl.display = egl.eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_KHR, gbm.device,
+                                                                                     NULL);
+    else                              egl.display = eglGetDisplay((void *) gbm.device);
+
+    if (!egl.display) {
+        debug("Couldn't get EGL display");
+        return false;
+    }
+
+
+    debug("Initializing EGL...");
+    if (!eglInitialize(egl.display, &major, &minor)) {
+        debug("failed to initialize EGL");
+        return false;
+    }
+
+    debug("Querying EGL display extensions...");
+    egl_exts_dpy = eglQueryString(egl.display, EGL_EXTENSIONS);
+    egl.modifiers_supported = strstr(egl_exts_dpy, "EGL_EXT_image_dma_buf_import_modifiers") != NULL;
+
+
+    debug("Using display %p with EGL version %d.%d\n", egl.display, major, minor);
+    debug("===================================");
+    debug("EGL information:");
+    debug("  version: %s\n", eglQueryString(egl.display, EGL_VERSION));
+    debug("  vendor: \"%s\"\n", eglQueryString(egl.display, EGL_VENDOR));
+    debug("  client extensions: \"%s\"\n", egl_exts_client);
+    debug("  display extensions: \"%s\"\n", egl_exts_dpy);
+    debug("===================================");
+
+
+    debug("Binding OpenGL ES API...");
+    if (!eglBindAPI(EGL_OPENGL_ES_API)) {
+        debug("failed to bind OpenGL ES API");
+        return false;
+    }
+
+
+    debug("Choosing EGL config...");
+    EGLint count = 0, matched = 0;
+    EGLConfig *configs;
+    bool _found_matching_config = false;
+
+    if (!eglGetConfigs(egl.display, NULL, 0, &count) || count < 1) {
+        debug("No EGL configs to choose from.");
+        return false;
+    }
+
+    configs = malloc(count * sizeof(EGLConfig));
+    if (!configs) return false;
+
+    debug("Finding EGL configs with appropriate attributes...");
+    if (!eglChooseConfig(egl.display, config_attribs, configs, count, &matched) || !matched) {
+        debug("No EGL configs with appropriate attributes.");
+        free(configs);
+        return false;
+    }
+    debug("eglChooseConfig done");
+
+    if (!gbm.format) {
+        debug("!gbm.format");
+        _found_matching_config = true;
+    } else {
+        debug("gbm.format");
+        for (int i = 0; i < count; i++) {
+            EGLint id;
+            debug("checking id=%d\n", id);
+            if (!eglGetConfigAttrib(egl.display, configs[i], EGL_NATIVE_VISUAL_ID, &id))    continue;
+
+            if (id == gbm.format) {
+                debug("gbm.format=%d\n", id);
+
+                egl.config = configs[i];
+                _found_matching_config = true;
+                break;
+            }
+        }
+    }
+    free(configs);
+
+    if (!_found_matching_config) {
+        debug("Could not find context with appropriate attributes and matching native visual ID.");
+        return false;
+    }
+
+    debug("Creating EGL context...");
+    egl.context = eglCreateContext(egl.display, egl.config, EGL_NO_CONTEXT, context_attribs);
+    if (egl.context == NULL) {
+        debug("failed to create EGL context");
+        return false;
+    }
+
+    debug("Creating EGL window surface...");
+    egl.surface = eglCreateWindowSurface(egl.display, egl.config, (EGLNativeWindowType) gbm.surface, NULL);
+    if (egl.surface == EGL_NO_SURFACE) {
+        debug("failed to create EGL window surface");
+        return false;
+    }
+
+    if (!eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context)) {
+        debug("Could not make EGL context current to get OpenGL information");
+        return false;
+    }
+
+    egl.renderer = (char *) glGetString(GL_RENDERER);
+
+    gl_exts = (char *) glGetString(GL_EXTENSIONS);
+    debug("===================================");
+    debug("OpenGL ES information:");
+    debug("  version: \"%s\"\n", glGetString(GL_VERSION));
+    debug("  shading language version: \"%s\"\n", glGetString(GL_SHADING_LANGUAGE_VERSION));
+    debug("  vendor: \"%s\"\n", glGetString(GL_VENDOR));
+    debug("  renderer: \"%s\"\n", egl.renderer);
+    debug("  extensions: \"%s\"\n", gl_exts);
+    debug("===================================");
+
+    if (strncmp(egl.renderer, "llvmpipe", sizeof("llvmpipe") - 1) == 0)
+        debug("Detected llvmpipe (ie. software rendering) as the OpenGL ES renderer. Make sure to run as root");
+
+    drm.evctx = (drmEventContext) {
+        .version = 4,
+        .vblank_handler = NULL,
+        .page_flip_handler = pageflip_handler,
+        .page_flip_handler2 = NULL,
+        .sequence_handler = NULL
+    };
+
+    debug("Swapping buffers...");
+    eglSwapBuffers(egl.display, egl.surface);
+
+    debug("Locking front buffer...");
+    drm.previous_bo = gbm_surface_lock_front_buffer(gbm.surface);
+
+    debug("getting new framebuffer for BO...");
+    struct drm_fb *fb = drm_fb_get_from_bo(drm.previous_bo);
+    if (!fb) {
+        debug("failed to get a new framebuffer BO");
+        return false;
+    }
+
+    debug("Setting CRTC...");
+    ok = drmModeSetCrtc(drm.fd, drm.crtc_id, fb->fb_id, 0, 0, &drm.connector_id, 1, drm.mode);
+    if (ok) {
+        debug("failed to set mode: %s\n", strerror(errno));
+        return false;
+    }
+
+    debug("Clearing current context...");
+    if (!eglMakeCurrent(egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)) {
+        debug("Could not clear EGL context");
+        return false;
+    }
+
+    debug("finished display setup!");
+
+    return true;
+}
+
+void destroy_display(void)
+{
+    debug("Deinitializing display not yet implemented");
+}
+
+bool init_application(void)
+{
+    int ok, _errno;
+
+    // configure flutter rendering
+    flutter.renderer_config.type = kOpenGL;
+    flutter.renderer_config.open_gl.struct_size     = sizeof(flutter.renderer_config.open_gl);
+    flutter.renderer_config.open_gl.make_current    = make_current;
+    flutter.renderer_config.open_gl.clear_current   = clear_current;
+    flutter.renderer_config.open_gl.present         = present;
+    flutter.renderer_config.open_gl.fbo_callback    = fbo_callback;
+    flutter.renderer_config.open_gl.gl_proc_resolver = proc_resolver;
+    flutter.renderer_config.open_gl.surface_transformation = transformation_callback;
+
+    // configure flutter
+    flutter.args.struct_size                = sizeof(FlutterProjectArgs);
+    flutter.args.assets_path                = flutter.asset_bundle_path;
+    flutter.args.icu_data_path              = flutter.icu_data_path;
+    flutter.args.isolate_snapshot_data_size = 0;
+    flutter.args.isolate_snapshot_data      = NULL;
+    flutter.args.isolate_snapshot_instructions_size = 0;
+    flutter.args.isolate_snapshot_instructions   = NULL;
+    flutter.args.vm_snapshot_data_size      = 0;
+    flutter.args.vm_snapshot_data           = NULL;
+    flutter.args.vm_snapshot_instructions_size = 0;
+    flutter.args.vm_snapshot_instructions   = NULL;
+    flutter.args.command_line_argc          = flutter.engine_argc;
+    flutter.args.command_line_argv          = flutter.engine_argv;
+    flutter.args.platform_message_callback  = on_platform_message;
+    flutter.args.custom_task_runners        = &(FlutterCustomTaskRunners) {
+        .struct_size = sizeof(FlutterCustomTaskRunners),
+        .platform_task_runner = &(FlutterTaskRunnerDescription) {
+            .struct_size = sizeof(FlutterTaskRunnerDescription),
+            .user_data = NULL,
+            .runs_task_on_current_thread_callback = &runs_platform_tasks_on_current_thread,
+            .post_task_callback = &flutter_post_platform_task
+        }
+    };
+
+    // only enable vsync if the kernel supplies valid vblank timestamps
+    uint64_t ns = 0;
+    ok = drmCrtcGetSequence(drm.fd, drm.crtc_id, NULL, &ns);
+    if (ok != 0) _errno = errno;
+
+    if ((ok == 0) && (ns != 0)) {
+        drm.disable_vsync = false;
+        flutter.args.vsync_callback = vsync_callback;
+    } else {
+        drm.disable_vsync = true;
+        if (ok != 0) {
+            debug("Could not get last vblank timestamp. %s", strerror(_errno));
+        } else {
+            debug("Kernel didn't return a valid vblank timestamp. (timestamp == 0)");
+        }
+        debug("VSync will be disabled");
+    }
+
+    // spin up the engine
+    FlutterEngineResult _result = FlutterEngineRun(FLUTTER_ENGINE_VERSION, &flutter.renderer_config,
+                                                   &flutter.args, NULL, &engine);
+    if (_result != kSuccess) {
+        debug("Could not run the flutter engine");
+        return false;
+    } else {
+        debug("flutter engine successfully started up.");
+    }
+
+    engine_running = true;
+
+    // update window size
+    ok = FlutterEngineSendWindowMetricsEvent(
+             engine,
+    &(FlutterWindowMetricsEvent) {
+        .struct_size = sizeof(FlutterWindowMetricsEvent), .width = width, .height = height, .pixel_ratio = pixel_ratio
+    }
+         ) == kSuccess;
+
+    if (!ok) {
+        debug("Could not update Flutter application size.");
+        return false;
+    }
+
+    return true;
+}
+
+void destroy_application(void)
+{
+    int ok;
+
+    if (engine != NULL) {
+        if (FlutterEngineShutdown(engine) != kSuccess)
+            debug("Could not shutdown the flutter engine.");
+
+        engine = NULL;
     }
 }
 
-int main(int argc, const char *argv[])
+void  init_io(void)
 {
+
+}
+
+void *io_loop(void *userdata)
+{
+    while (engine_running) {
+
+    }
+    return NULL;
+}
+
+bool run_io_thread(void)
+{
+    int ok = pthread_create(&io_thread_id, NULL, &io_loop, NULL);
+    if (ok != 0) {
+        error("couldn't create  io thread: [%s]", strerror(ok));
+        return false;
+    }
+
+    ok = pthread_setname_np(io_thread_id, "flutter_embeder.io");
+    if (ok != 0) {
+        error("couldn't set name of io thread: [%s]", strerror(ok));
+        return false;
+    }
+
+    return true;
+}
+
+int main(int argc, char **argv)
+{
+
 #ifdef DEBUG
 #ifdef LOG_PATH
     log_location = fopen(LOG_PATH, "w");
 #endif
 #endif
+
     if (argc != 3) {
         error("Invalid Arguments");
         exit(EXIT_FAILURE);
     }
 
-    const char *project_path = argv[1];
-    const char *icudtl_path = argv[2];
+    snprintf(flutter.asset_bundle_path, sizeof(flutter.asset_bundle_path), "%s", argv[1]);
+    snprintf(flutter.icu_data_path, sizeof(flutter.icu_data_path), "%s", argv[2]);
 
-    erlcmd_init(&handler, handle_from_elixir, NULL);
-
-    // Initialize the file descriptor set for polling
-    memset(fdset, -1, sizeof(fdset));
-    fdset[0].fd = ERLCMD_READ_FD;
-    fdset[0].events = POLLIN;
-    fdset[0].revents = 0;
-
-    fdset[1].fd = eventfd(0, 0);
-    fdset[1].events = POLLIN;
-    fdset[1].revents = 0;
-
-    num_pollfds = 2;
-
-    int result = glfwInit();
-    assert(result == GLFW_TRUE);
-
-    GLFWwindow *window = glfwCreateWindow(kInitialWindowWidth, kInitialWindowHeight, "Flutter", NULL, NULL);
-    assert(window != NULL);
-
-    int framebuffer_width, framebuffer_height;
-    glfwGetFramebufferSize(window, &framebuffer_width, &framebuffer_height);
-    g_pixelRatio = framebuffer_width / kInitialWindowWidth;
-
-    bool runResult = RunFlutter(window, project_path, icudtl_path);
-    assert(runResult);
-
-    glfwSetKeyCallback(window, GLFWKeyCallback);
-    glfwSetWindowSizeCallback(window, GLFWwindowSizeCallback);
-    glfwSetMouseButtonCallback(window, GLFWmouseButtonCallback);
-    error("??????");
-    if (pthread_mutex_init(&lock, NULL) != 0) {
-        error("\n mutex init has failed\n");
-        return 1;
+    // check if asset bundle path is valid
+    if (!init_paths()) {
+        error("init_paths");
+        return EXIT_FAILURE;
     }
 
-    pthread_t thread_id;
-    pthread_create(&thread_id, NULL, myThreadFun, NULL);
-
-    while (!glfwWindowShouldClose(window) && !isCallerDown()) {
-        glfwWaitEventsTimeout(0.1);
-        // glfwWaitEvents();
+    if (!init_message_loop()) {
+        error("init_message_loop");
+        return EXIT_FAILURE;
     }
 
-    pthread_join(thread_id, NULL);
-    pthread_mutex_destroy(&lock);
-    glfwDestroyWindow(window);
-    glfwTerminate();
+    // initialize display
+    debug("initializing display...");
+    if (!init_display()) {
+        return EXIT_FAILURE;
+    }
 
-    exit(EXIT_SUCCESS);
+    // initialize application
+    debug("Initializing Application...");
+    if (!init_application()) {
+        return EXIT_FAILURE;
+    }
+
+    debug("Initializing Input devices...");
+    init_io();
+
+    // read input events
+    debug("Running IO thread...");
+    run_io_thread();
+
+    // run message loop
+    debug("Running message loop...");
+    run_message_loop();
+
+    // exit
+    destroy_application();
+    destroy_display();
+
+    return EXIT_SUCCESS;
 }
