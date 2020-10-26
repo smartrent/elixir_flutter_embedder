@@ -40,22 +40,18 @@ defmodule NervesExample.MixProject do
   defp deps do
     [
       # Dependencies for all targets
-      {:nerves, "~> 1.6.0", runtime: false},
+      {:nerves, "~> 1.6.0 or ~> 1.7.0", runtime: false},
       {:shoehorn, "~> 0.6"},
       {:ring_logger, "~> 0.6"},
       {:toolshed, "~> 0.2"},
 
       # Dependencies for all targets except :host
       {:nerves_runtime, "~> 0.6", targets: @all_targets},
-      {:nerves_pack, github: "nerves-project/nerves_pack", branch: "main", targets: @all_targets},
-      {:nerves_system_br, "~> 1.13", targets: @all_targets, override: true},
+      {:nerves_pack, "~> 0.4", targets: @all_targets},
 
       # Dependencies for specific targets
-      {
-        :nerves_system_bbb_sgx,
-        #  path: "~/nerves/nerves_system_br/o/configs/nerves_system_bbb_sgx",
-        path: "~/workspace/flutter/nerves_system_bbb_sgx", runtime: false, targets: :bbb
-      },
+      {:nerves_system_bbb_sgx, "~> 2.7.2",
+       organization: :smartrent, runtime: false, targets: :bbb},
       {
         :nerves_system_rpi3,
         #  path: "~/nerves/nerves_system_br/o/configs/nerves_system_rpi3",
