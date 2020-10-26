@@ -19,7 +19,7 @@
 #include <float.h>
 #include <assert.h>
 #include <time.h>
-#include <glob.h>
+#include <poll.h>
 
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -47,7 +47,7 @@
 #ifdef DEBUG
 // #define LOG_PATH "/tmp/log.txt"
 #define log_location stderr
-#define debug(...) do { fprintf(log_location, __VA_ARGS__); fprintf(log_location, "\r"); fflush(log_location); } while(0)
+#define debug(...) do { fprintf(log_location, __VA_ARGS__); fprintf(log_location, "\r\n"); fflush(log_location); } while(0)
 #define error(...) do { debug(__VA_ARGS__); } while (0)
 #else
 #define debug(...)
@@ -100,18 +100,6 @@ struct engine_task {
     };
     uint64_t target_time;
 };
-
-static inline void *memdup(const void *restrict src, const size_t n)
-{
-    void *__restrict__ dest;
-
-    if ((src == NULL) || (n == 0)) return NULL;
-
-    dest = malloc(n);
-    if (dest == NULL) return NULL;
-
-    return memcpy(dest, src, n);
-}
 
 struct drm_fb {
     struct gbm_bo *bo;
@@ -208,7 +196,6 @@ struct {
 intptr_t batons[64];
 uint8_t i_batons = 0;
 int scheduled_frames = 0;
-pthread_t io_thread_id;
 pthread_t platform_thread_id;
 
 struct engine_task tasklist = {
@@ -223,6 +210,24 @@ pthread_cond_t  task_added = PTHREAD_COND_INITIALIZER;
 
 FlutterEngine engine;
 _Atomic bool  engine_running = false;
+
+// IO stuff
+
+// position & pointer phase of a mouse pointer / multitouch slot
+// A 10-finger multi-touch display has 10 slots and each of them have their own position, tracking id, etc.
+// All mouses / touchpads share the same mouse pointer.
+struct mousepointer_mtslot {
+	// the MT tracking ID used to track this touch.
+	int     id;
+	int32_t flutter_slot_id;
+	double  x, y;
+	FlutterPointerPhase phase;
+};
+
+struct mousepointer_mtslot mousepointer;
+pthread_t io_thread_id;
+#define MAX_EVENTS_PER_READ 64
+static struct input_event io_input_buffer[MAX_EVENTS_PER_READ];
 
 bool make_current(void *userdata)
 {
@@ -505,7 +510,10 @@ void *proc_resolver(void *userdata, const char *name)
 
 void on_platform_message(const FlutterPlatformMessage *message, void *userdata)
 {
-    debug("platform message stub");
+    // FlutterEngineRunTask(engine, &task);
+    // FlutterEngineSendPlatformMessageResponse(engine, message->response_handle, message->message, message->message_size);
+    // debug("platform message stub");
+    FlutterEngineSendPlatformMessage(engine, message);
 }
 
 void vsync_callback(void *userdata, intptr_t baton)
@@ -1281,15 +1289,134 @@ void destroy_application(void)
     }
 }
 
-void  init_io(void)
+bool init_io(void)
 {
+    FlutterPointerEvent flutterevents[64] = {0};
+	size_t i_flutterevent = 0;
+	int n_flutter_slots = 0;
 
+    // add the mouse slot
+	mousepointer = (struct mousepointer_mtslot) {
+		.id = 0,
+		.flutter_slot_id = n_flutter_slots++,
+		.x = 0, .y = 0,
+		.phase = kCancel
+	};
+
+	flutterevents[i_flutterevent++] = (FlutterPointerEvent) {
+		.struct_size = sizeof(FlutterPointerEvent),
+		.phase = kAdd,
+		.timestamp = (size_t) (FlutterEngineGetCurrentTime()*1000),
+		.x = 0,
+		.y = 0,
+		// .signal_kind = kFlutterPointerSignalKindNone,
+		.device_kind = kFlutterPointerDeviceKindTouch,
+		.device = 0,
+		.buttons = 0
+	};
+    return FlutterEngineSendPointerEvent(engine, flutterevents, i_flutterevent) == kSuccess;
 }
 
+void process_io_events(int fd) {
+    // Read as many the input events as possible
+    ssize_t rd = read(fd, io_input_buffer, sizeof(io_input_buffer));
+    if (rd < 0)
+        error("read failed");
+    if (rd % sizeof(struct input_event))
+        error("read returned %d which is not a multiple of %d!", (int) rd, (int) sizeof(struct input_event));
+
+    // code ABS_MT_TRACKING_ID = 0x39 (57)
+    // code ABS_X              = 0x00
+    // code ABS_Y              = 0x01
+    // code ABS_Z              = 0x02
+
+    FlutterPointerEvent flutterevents[64] = {0};
+	size_t i_flutterevent = 0;
+
+    size_t event_count = rd / sizeof(struct input_event);
+    for (size_t i = 0; i < event_count; i++) {
+        if (io_input_buffer[i].type == EV_ABS) {
+            // debug("EV_ABS event code=%d value=%d\r\n", io_input_buffer[i].code, io_input_buffer[i].value);
+
+            if (io_input_buffer[i].code == ABS_X) {
+                mousepointer.phase = kDown;
+                mousepointer.x = io_input_buffer[i].value;
+            } else if (io_input_buffer[i].code == ABS_Y) {
+                mousepointer.phase = kDown;
+                mousepointer.y = io_input_buffer[i].value;
+            } else if (io_input_buffer[i].code == ABS_MT_TRACKING_ID && io_input_buffer[i].value == -1) {
+                mousepointer.phase = kUp;
+            }
+
+        } else if(io_input_buffer[i].type == EV_SYN && io_input_buffer[i].code == SYN_REPORT) {
+            // we don't want to send an event to flutter if nothing changed.
+            if (mousepointer.phase == kCancel) continue;
+
+            // convert raw pixel coordinates to flutter pixel coordinates
+            // (raw pixel coordinates don't respect screen rotation)
+            double flutterx, fluttery;
+            if (rotation == 0) {
+                flutterx = mousepointer.x;
+                fluttery = mousepointer.y;
+            } else if (rotation == 90) {
+                flutterx = mousepointer.y;
+                fluttery = width - mousepointer.x;
+            } else if (rotation == 180) {
+                flutterx = width - mousepointer.x;
+                fluttery = height - mousepointer.y;
+            } else if (rotation == 270) {
+                flutterx = height - mousepointer.y;
+                fluttery = mousepointer.x;
+            }
+
+            flutterevents[i_flutterevent++] = (FlutterPointerEvent) {
+                .struct_size = sizeof(FlutterPointerEvent),
+                .phase = mousepointer.phase,
+                .timestamp = FlutterEngineGetCurrentTime(),
+                // .timestamp = io_input_buffer[i].time.tv_sec*1000000 + io_input_buffer[i].time.tv_usec,
+                .x = flutterx, .y = fluttery,
+                .device = mousepointer.flutter_slot_id,
+                // .signal_kind = kFlutterPointerSignalKindNone,
+                // .scroll_delta_x = 0, .scroll_delta_y = 0,
+                .device_kind = kFlutterPointerDeviceKindTouch,
+                .buttons = 0
+            };
+            debug("flutterevent[%d]", i_flutterevent - 1);
+            debug(" .x=%05f", flutterevents[i_flutterevent -1].x);
+            debug(" .y=%05f", flutterevents[i_flutterevent -1].y);
+            debug(" .phase=%d\r\n", flutterevents[i_flutterevent -1].phase);
+        } else {
+            // debug("unknown input_event type=%d\r\n", io_input_buffer[i].type);
+        }
+    }
+
+	// now, send the data to the flutter engine
+	if (FlutterEngineSendPointerEvent(engine, flutterevents, i_flutterevent) != kSuccess) {
+		debug("could not send pointer events to flutter engine\r\n");
+	}
+}
+ // cmd("/root/flutter_embedder /srv/erlang/lib/nerves_example-0.1.0/priv/flutter_assets /srv/erlang/lib/flutter_embedder-0.1.0/priv/icudtl.dat")
 void *io_loop(void *userdata)
 {
-    while (engine_running) {
+    const char *input_path = "/dev/input/event0";
+    int fd = open(input_path, O_RDONLY);
+    if (errno == EACCES && getuid() != 0)
+        error("You do not have access to %s.", input_path);
 
+    while (engine_running) {
+        // debug("io poll");
+        struct pollfd fdset[1];
+
+        fdset[0].fd = fd;
+        fdset[0].events = (POLLIN | POLLPRI | POLLHUP);
+        fdset[0].revents = 0;
+
+        int rc = poll(fdset, 2, -1);
+        if (rc < 0)
+            error("poll error");
+
+        if (fdset[0].revents & (POLLIN | POLLHUP))
+            process_io_events(fd);
     }
     return NULL;
 }
@@ -1348,11 +1475,15 @@ int main(int argc, char **argv)
     // initialize application
     debug("Initializing Application...");
     if (!init_application()) {
+        debug("init_application failed");
         return EXIT_FAILURE;
     }
 
     debug("Initializing Input devices...");
-    init_io();
+    if (!init_io()) {
+        debug("init_io failed");
+        return EXIT_FAILURE;
+    }
 
     // read input events
     debug("Running IO thread...");
