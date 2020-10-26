@@ -111,10 +111,10 @@ struct pageflip_data {
     intptr_t next_baton;
 };
 
-void post_platform_task(struct engine_task *task);
+static void post_platform_task(struct engine_task *task);
 
 /// width & height of the display in pixels
-uint32_t width, height;
+static uint32_t width, height;
 
 /// physical width & height of the display in millimeters
 /// the physical size can only be queried for HDMI displays (and even then, most displays will
@@ -122,26 +122,26 @@ uint32_t width, height;
 /// for DSI displays, the physical size of the official 7-inch display will be set in init_display.
 /// init_display will only update width_mm and height_mm if they are set to zero, allowing you
 ///   to hardcode values for you individual display.
-uint32_t width_mm = 0, height_mm = 0;
-uint32_t refresh_rate;
+static uint32_t width_mm = 0, height_mm = 0;
+static uint32_t refresh_rate;
 
 /// The pixel ratio used by flutter.
 /// This is computed inside init_display using width_mm and height_mm.
 /// flutter only accepts pixel ratios >= 1.0
 /// init_display will only update this value if it is equal to zero,
 ///   allowing you to hardcode values.
-double pixel_ratio = 0.0;
+static double pixel_ratio = 0.0;
 
 /// The current device orientation.
 /// The initial device orientation is based on the width & height data from drm.
-enum device_orientation orientation;
+static enum device_orientation orientation;
 
 /// The angle between the initial device orientation and the current device orientation in degrees.
 /// (applied as a rotation to the flutter window in transformation_callback, and also
 /// is used to determine if width/height should be swapped when sending a WindowMetrics event to flutter)
-int rotation = 0;
+static int rotation = 0;
 
-struct {
+static struct {
     char device[PATH_MAX];
     bool has_device;
     int fd;
@@ -154,14 +154,14 @@ struct {
     bool disable_vsync;
 } drm = {0};
 
-struct {
+static struct {
     struct gbm_device  *device;
     struct gbm_surface *surface;
     uint32_t            format;
     uint64_t            modifier;
 } gbm = {0};
 
-struct {
+static struct {
     EGLDisplay display;
     EGLConfig  config;
     EGLContext context;
@@ -177,7 +177,7 @@ struct {
                                                     const EGLint *attrib_list);
 } egl = {0};
 
-struct {
+static struct {
     char asset_bundle_path[240];
     char kernel_blob_path[256];
     char executable_path[256];
@@ -193,23 +193,23 @@ struct {
 // scheduled_frames - 1 is the number of total number of stored batons.
 // (If 5 vsync events were asked for by the flutter engine, you only need to store 4 batons.
 //  The baton for the first one that was asked for would've been returned immediately.)
-intptr_t batons[64];
-uint8_t i_batons = 0;
-int scheduled_frames = 0;
-pthread_t platform_thread_id;
+static intptr_t batons[64];
+static uint8_t i_batons = 0;
+static int scheduled_frames = 0;
+static pthread_t platform_thread_id;
 
-struct engine_task tasklist = {
+static struct engine_task tasklist = {
     .next = NULL,
     .type = kFlutterTask,
     .target_time = 0,
     .task = {.runner = NULL, .task = 0}
 };
 
-pthread_mutex_t tasklist_lock = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t  task_added = PTHREAD_COND_INITIALIZER;
+static pthread_mutex_t tasklist_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  task_added = PTHREAD_COND_INITIALIZER;
 
-FlutterEngine engine;
-_Atomic bool  engine_running = false;
+static FlutterEngine engine;
+static _Atomic bool  engine_running = false;
 
 // IO stuff
 
@@ -224,12 +224,12 @@ struct mousepointer_mtslot {
 	FlutterPointerPhase phase;
 };
 
-struct mousepointer_mtslot mousepointer;
-pthread_t io_thread_id;
+static struct mousepointer_mtslot mousepointer;
+static pthread_t io_thread_id;
 #define MAX_EVENTS_PER_READ 64
 static struct input_event io_input_buffer[MAX_EVENTS_PER_READ];
 
-bool make_current(void *userdata)
+static bool make_current(void *userdata)
 {
     if (eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context) != EGL_TRUE) {
         debug("make_current: could not make the context current.");
@@ -239,7 +239,7 @@ bool make_current(void *userdata)
     return true;
 }
 
-bool clear_current(void *userdata)
+static bool clear_current(void *userdata)
 {
     if (eglMakeCurrent(egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) != EGL_TRUE) {
         debug("clear_current: could not clear the current context.");
@@ -249,7 +249,7 @@ bool clear_current(void *userdata)
     return true;
 }
 
-void pageflip_handler(int fd, unsigned int frame, unsigned int sec, unsigned int usec, void *userdata)
+static void pageflip_handler(int fd, unsigned int frame, unsigned int sec, unsigned int usec, void *userdata)
 {
     FlutterEngineTraceEventInstant("pageflip");
     post_platform_task(&(struct engine_task) {
@@ -259,7 +259,7 @@ void pageflip_handler(int fd, unsigned int frame, unsigned int sec, unsigned int
     });
 }
 
-void drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
+static void drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
 {
     struct drm_fb *fb = data;
 
@@ -269,7 +269,7 @@ void drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
     free(fb);
 }
 
-struct drm_fb *drm_fb_get_from_bo(struct gbm_bo *bo)
+static struct drm_fb *drm_fb_get_from_bo(struct gbm_bo *bo)
 {
     uint32_t width, height, format, strides[4] = {0}, handles[4] = {0}, offsets[4] = {0}, flags = 0;
     int ok = -1;
@@ -333,7 +333,7 @@ struct drm_fb *drm_fb_get_from_bo(struct gbm_bo *bo)
     return fb;
 }
 
-bool present(void *userdata)
+static bool present(void *userdata)
 {
     fd_set fds;
     struct gbm_bo *next_bo;
@@ -369,12 +369,12 @@ bool present(void *userdata)
     return true;
 }
 
-uint32_t fbo_callback(void *userdata)
+static uint32_t fbo_callback(void *userdata)
 {
     return 0;
 }
 
-void cut_word_from_string(char *string, char *word)
+static void cut_word_from_string(char *string, char *word)
 {
     size_t word_length = strlen(word);
     char  *word_in_str = strstr(string, word);
@@ -393,7 +393,7 @@ void cut_word_from_string(char *string, char *word)
     }
 }
 
-const GLubyte *hacked_glGetString(GLenum name)
+static const GLubyte *hacked_glGetString(GLenum name)
 {
     static GLubyte *extensions = NULL;
 
@@ -477,7 +477,7 @@ const GLubyte *hacked_glGetString(GLenum name)
     return extensions;
 }
 
-void *proc_resolver(void *userdata, const char *name)
+static void *proc_resolver(void *userdata, const char *name)
 {
     static int is_VC4 = -1;
     void      *address;
@@ -508,7 +508,7 @@ void *proc_resolver(void *userdata, const char *name)
     return NULL;
 }
 
-void on_platform_message(const FlutterPlatformMessage *message, void *userdata)
+static void on_platform_message(const FlutterPlatformMessage *message, void *userdata)
 {
     // FlutterEngineRunTask(engine, &task);
     // FlutterEngineSendPlatformMessageResponse(engine, message->response_handle, message->message, message->message_size);
@@ -516,7 +516,7 @@ void on_platform_message(const FlutterPlatformMessage *message, void *userdata)
     FlutterEngineSendPlatformMessage(engine, message);
 }
 
-void vsync_callback(void *userdata, intptr_t baton)
+static void vsync_callback(void *userdata, intptr_t baton)
 {
     post_platform_task(&(struct engine_task) {
         .type = kVBlankRequest,
@@ -525,7 +525,7 @@ void vsync_callback(void *userdata, intptr_t baton)
     });
 }
 
-FlutterTransformation transformation_callback(void *userdata)
+static FlutterTransformation transformation_callback(void *userdata)
 {
     // report a transform based on the current device orientation.
     static bool _transformsInitialized = false;
@@ -561,13 +561,13 @@ FlutterTransformation transformation_callback(void *userdata)
 /************************
  * PLATFORM TASK-RUNNER *
  ************************/
-bool init_message_loop()
+static bool init_message_loop()
 {
     platform_thread_id = pthread_self();
     return true;
 }
 
-bool run_message_loop(void)
+static bool run_message_loop(void)
 {
     struct timespec abstargetspec;
     uint64_t currenttime, abstarget;
@@ -674,7 +674,7 @@ bool run_message_loop(void)
     return true;
 }
 
-void post_platform_task(struct engine_task *task)
+static void post_platform_task(struct engine_task *task)
 {
     struct engine_task *to_insert;
 
@@ -693,7 +693,7 @@ void post_platform_task(struct engine_task *task)
     pthread_cond_signal(&task_added);
 }
 
-void flutter_post_platform_task(FlutterTask task, uint64_t target_time, void *userdata)
+static void flutter_post_platform_task(FlutterTask task, uint64_t target_time, void *userdata)
 {
     post_platform_task(&(struct engine_task) {
         .type = kFlutterTask,
@@ -702,12 +702,12 @@ void flutter_post_platform_task(FlutterTask task, uint64_t target_time, void *us
     });
 }
 
-bool runs_platform_tasks_on_current_thread(void *userdata)
+static bool runs_platform_tasks_on_current_thread(void *userdata)
 {
     return pthread_equal(pthread_self(), platform_thread_id) != 0;
 }
 
-bool init_paths(void)
+static bool init_paths(void)
 {
 #define PATH_EXISTS(path) (access((path),R_OK)==0)
 
@@ -731,7 +731,7 @@ bool init_paths(void)
 #undef PATH_EXISTS
 }
 
-bool init_display(void)
+static bool init_display(void)
 {
     /**********************
      * DRM INITIALIZATION *
@@ -1187,12 +1187,12 @@ bool init_display(void)
     return true;
 }
 
-void destroy_display(void)
+static void destroy_display(void)
 {
     debug("Deinitializing display not yet implemented");
 }
 
-bool init_application(void)
+static bool init_application(void)
 {
     int ok, _errno;
 
@@ -1277,7 +1277,7 @@ bool init_application(void)
     return true;
 }
 
-void destroy_application(void)
+static void destroy_application(void)
 {
     int ok;
 
@@ -1289,7 +1289,7 @@ void destroy_application(void)
     }
 }
 
-bool init_io(void)
+static bool init_io(void)
 {
     FlutterPointerEvent flutterevents[64] = {0};
 	size_t i_flutterevent = 0;
@@ -1317,7 +1317,7 @@ bool init_io(void)
     return FlutterEngineSendPointerEvent(engine, flutterevents, i_flutterevent) == kSuccess;
 }
 
-void process_io_events(int fd) {
+static void process_io_events(int fd) {
     // Read as many the input events as possible
     ssize_t rd = read(fd, io_input_buffer, sizeof(io_input_buffer));
     if (rd < 0)
@@ -1396,7 +1396,7 @@ void process_io_events(int fd) {
 	}
 }
  // cmd("/root/flutter_embedder /srv/erlang/lib/nerves_example-0.1.0/priv/flutter_assets /srv/erlang/lib/flutter_embedder-0.1.0/priv/icudtl.dat")
-void *io_loop(void *userdata)
+static void *io_loop(void *userdata)
 {
     const char *input_path = "/dev/input/event0";
     int fd = open(input_path, O_RDONLY);
@@ -1421,7 +1421,7 @@ void *io_loop(void *userdata)
     return NULL;
 }
 
-bool run_io_thread(void)
+static bool run_io_thread(void)
 {
     int ok = pthread_create(&io_thread_id, NULL, &io_loop, NULL);
     if (ok != 0) {
