@@ -1294,9 +1294,9 @@ static bool init_io(void)
 		.timestamp = (size_t) (FlutterEngineGetCurrentTime()*1000),
 		.x = 0,
 		.y = 0,
-		// .signal_kind = kFlutterPointerSignalKindNone,
+		.signal_kind = kFlutterPointerSignalKindNone,
 		.device_kind = kFlutterPointerDeviceKindTouch,
-		.device = 0,
+		.device = mousepointer.flutter_slot_id,
 		.buttons = 0
 	};
     return FlutterEngineSendPointerEvent(engine, flutterevents, i_flutterevent) == kSuccess;
@@ -1324,15 +1324,18 @@ static void process_io_events(int fd) {
             // debug("EV_ABS event code=%d value=%d\r\n", io_input_buffer[i].code, io_input_buffer[i].value);
 
             if (io_input_buffer[i].code == ABS_X) {
-                mousepointer.phase = kDown;
                 mousepointer.x = io_input_buffer[i].value;
             } else if (io_input_buffer[i].code == ABS_Y) {
-                mousepointer.phase = kDown;
                 mousepointer.y = io_input_buffer[i].value;
             } else if (io_input_buffer[i].code == ABS_MT_TRACKING_ID && io_input_buffer[i].value == -1) {
-                mousepointer.phase = kUp;
             }
 
+        } else if(io_input_buffer[i].type == EV_KEY) {
+            if (io_input_buffer[i].code == BTN_TOUCH) {
+                mousepointer.phase = io_input_buffer[i].value ? kDown : kUp;
+            } else {
+                debug("unknown EV_KEY code=%d value=%d\r\n", io_input_buffer[i].code, io_input_buffer[i].value);
+            }
         } else if(io_input_buffer[i].type == EV_SYN && io_input_buffer[i].code == SYN_REPORT) {
             // we don't want to send an event to flutter if nothing changed.
             if (mousepointer.phase == kCancel) continue;
@@ -1357,12 +1360,12 @@ static void process_io_events(int fd) {
             flutterevents[i_flutterevent++] = (FlutterPointerEvent) {
                 .struct_size = sizeof(FlutterPointerEvent),
                 .phase = mousepointer.phase,
-                .timestamp = FlutterEngineGetCurrentTime(),
-                // .timestamp = io_input_buffer[i].time.tv_sec*1000000 + io_input_buffer[i].time.tv_usec,
+                // .timestamp = FlutterEngineGetCurrentTime(),
+                .timestamp = io_input_buffer[i].time.tv_sec*1000000 + io_input_buffer[i].time.tv_usec,
                 .x = flutterx, .y = fluttery,
                 .device = mousepointer.flutter_slot_id,
-                // .signal_kind = kFlutterPointerSignalKindNone,
-                // .scroll_delta_x = 0, .scroll_delta_y = 0,
+                .signal_kind = kFlutterPointerSignalKindNone,
+                .scroll_delta_x = 0, .scroll_delta_y = 0,
                 .device_kind = kFlutterPointerDeviceKindTouch,
                 .buttons = 0
             };
@@ -1370,12 +1373,16 @@ static void process_io_events(int fd) {
             debug(" .x=%05f", flutterevents[i_flutterevent -1].x);
             debug(" .y=%05f", flutterevents[i_flutterevent -1].y);
             debug(" .phase=%d\r\n", flutterevents[i_flutterevent -1].phase);
+            mousepointer.phase = kCancel;
         } else {
-            // debug("unknown input_event type=%d\r\n", io_input_buffer[i].type);
+            debug("unknown input_event type=%d\r\n", io_input_buffer[i].type);
         }
     }
 
+    if (i_flutterevent == 0) return;
+
 	// now, send the data to the flutter engine
+    debug("sending %d flutter pointer events\r\n", i_flutterevent);
 	if (FlutterEngineSendPointerEvent(engine, flutterevents, i_flutterevent) != kSuccess) {
 		debug("could not send pointer events to flutter engine\r\n");
 	}
