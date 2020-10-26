@@ -3,26 +3,30 @@ import Config
 # Use shoehorn to start the main application. See the shoehorn
 # docs for separating out critical OTP applications such as those
 # involved with firmware updates.
-bbb_init = if Mix.target() == :bbb do
-  IO.puts "Enabling BBB stuff"
-  [
-    {:os, :cmd, ['modprobe pvrsrvkm']},
-    {:os, :cmd, ['modprobe edt-ft5x06']},
-    {:os, :cmd, ['pvrsrvctl --start --no-module']},
-  ]
-else
-  []
-end
+bbb_init =
+  if Mix.target() == :bbb do
+    IO.puts("Enabling BBB stuff")
+
+    [
+      {:os, :cmd, ['modprobe pvrsrvkm']},
+      {:os, :cmd, ['modprobe edt-ft5x06']},
+      {:os, :cmd, ['pvrsrvctl --start --no-module']}
+    ]
+  else
+    []
+  end
 
 config :shoehorn,
-  init: bbb_init ++ [
-    :nerves_runtime,
-    :nerves_pack,
-    {:os, :cmd, ['udevd -d']},
-    {:os, :cmd, ['udevadm trigger --type=subsystems --action=add']},
-    {:os, :cmd, ['udevadm trigger --type=devices --action=add']},
-    {:os, :cmd, ['udevadm settle --timeout=30']}
-  ],
+  init:
+    bbb_init ++
+      [
+        :nerves_runtime,
+        :nerves_pack,
+        {:os, :cmd, ['udevd -d']},
+        {:os, :cmd, ['udevadm trigger --type=subsystems --action=add']},
+        {:os, :cmd, ['udevadm trigger --type=devices --action=add']},
+        {:os, :cmd, ['udevadm settle --timeout=30']}
+      ],
   app: Mix.Project.config()[:app]
 
 # Nerves Runtime can enumerate hardware devices and send notifications via
