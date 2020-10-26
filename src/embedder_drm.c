@@ -271,9 +271,6 @@ static void drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
 
 static struct drm_fb *drm_fb_get_from_bo(struct gbm_bo *bo)
 {
-    uint32_t width, height, format, strides[4] = {0}, handles[4] = {0}, offsets[4] = {0}, flags = 0;
-    int ok = -1;
-
     // if the buffer object already has some userdata associated with it,
     //   it's the framebuffer we allocated.
     struct drm_fb *fb = gbm_bo_get_user_data(bo);
@@ -283,14 +280,15 @@ static struct drm_fb *drm_fb_get_from_bo(struct gbm_bo *bo)
     fb = calloc(1, sizeof(struct drm_fb));
     fb->bo = bo;
 
-    width = gbm_bo_get_width(bo);
-    height = gbm_bo_get_height(bo);
-    format = gbm_bo_get_format(bo);
+    int width = gbm_bo_get_width(bo);
+    int height = gbm_bo_get_height(bo);
+    int format = gbm_bo_get_format(bo);
 
     uint64_t modifiers[4] = {0};
     modifiers[0] = gbm_bo_get_modifier(bo);
     const int num_planes = gbm_bo_get_plane_count(bo);
 
+    uint32_t strides[4] = {0}, handles[4] = {0}, offsets[4] = {0};
     for (int i = 0; i < num_planes; i++) {
         strides[i] = gbm_bo_get_stride_for_plane(bo, i);
         handles[i] = gbm_bo_get_handle(bo).u32;
@@ -298,11 +296,12 @@ static struct drm_fb *drm_fb_get_from_bo(struct gbm_bo *bo)
         modifiers[i] = modifiers[0];
     }
 
+    uint32_t flags = 0;
     if (modifiers[0]) {
         flags = DRM_MODE_FB_MODIFIERS;
     }
 
-    ok = drmModeAddFB2WithModifiers(drm.fd, width, height, format, handles, strides, offsets, modifiers,
+    int ok = drmModeAddFB2WithModifiers(drm.fd, width, height, format, handles, strides, offsets, modifiers,
                                     &fb->fb_id, flags);
 
     if (ok) {
@@ -335,26 +334,21 @@ static struct drm_fb *drm_fb_get_from_bo(struct gbm_bo *bo)
 
 static bool present(void *userdata)
 {
-    fd_set fds;
-    struct gbm_bo *next_bo;
-    struct drm_fb *fb;
-    int ok;
-
     FlutterEngineTraceEventDurationBegin("present");
 
     eglSwapBuffers(egl.display, egl.surface);
-    next_bo = gbm_surface_lock_front_buffer(gbm.surface);
-    fb = drm_fb_get_from_bo(next_bo);
+    struct gbm_bo *next_bo = gbm_surface_lock_front_buffer(gbm.surface);
+    struct drm_fb *fb = drm_fb_get_from_bo(next_bo);
 
     // workaround for #38
     if (!drm.disable_vsync) {
-        ok = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id, DRM_MODE_PAGE_FLIP_EVENT, drm.previous_bo);
+        int ok = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id, DRM_MODE_PAGE_FLIP_EVENT, drm.previous_bo);
         if (ok) {
             perror("failed to queue page flip");
             return false;
         }
     } else {
-        ok = drmModeSetCrtc(drm.fd, drm.crtc_id, fb->fb_id, 0, 0, &drm.connector_id, 1, drm.mode);
+        int ok = drmModeSetCrtc(drm.fd, drm.crtc_id, fb->fb_id, 0, 0, &drm.connector_id, 1, drm.mode);
         if (ok == -1) {
             perror("failed swap buffers");
             return false;
@@ -362,7 +356,7 @@ static bool present(void *userdata)
     }
 
     gbm_surface_release_buffer(gbm.surface, drm.previous_bo);
-    drm.previous_bo = (struct gbm_bo *) next_bo;
+    drm.previous_bo = next_bo;
 
     FlutterEngineTraceEventDurationEnd("present");
 
@@ -531,8 +525,6 @@ static FlutterTransformation transformation_callback(void *userdata)
     static bool _transformsInitialized = false;
     static FlutterTransformation rotate0, rotate90, rotate180, rotate270;
 
-    static int counter = 0;
-
     if (!_transformsInitialized) {
         rotate0 = (FlutterTransformation) {
             .scaleX = 1, .skewX  = 0, .transX = 0,
@@ -569,10 +561,6 @@ static bool init_message_loop()
 
 static bool run_message_loop(void)
 {
-    struct timespec abstargetspec;
-    uint64_t currenttime, abstarget;
-    intptr_t baton;
-
     while (true) {
         pthread_mutex_lock(&tasklist_lock);
 
@@ -581,9 +569,11 @@ static bool run_message_loop(void)
             pthread_cond_wait(&task_added, &tasklist_lock);
 
         // wait for a task to be ready to be run
+        uint64_t currenttime;
         while (tasklist.target_time > (currenttime = FlutterEngineGetCurrentTime())) {
+            struct timespec abstargetspec;
             clock_gettime(CLOCK_REALTIME, &abstargetspec);
-            abstarget = abstargetspec.tv_nsec + abstargetspec.tv_sec * 1000000000ull - currenttime;
+            uint64_t abstarget = abstargetspec.tv_nsec + abstargetspec.tv_sec * 1000000000ull - currenttime;
             abstargetspec.tv_nsec = abstarget % 1000000000;
             abstargetspec.tv_sec =  abstarget / 1000000000;
 
@@ -676,9 +666,7 @@ static bool run_message_loop(void)
 
 static void post_platform_task(struct engine_task *task)
 {
-    struct engine_task *to_insert;
-
-    to_insert = malloc(sizeof(struct engine_task));
+    struct engine_task *to_insert = malloc(sizeof(struct engine_task));
     if (!to_insert) return;
 
     memcpy(to_insert, task, sizeof(struct engine_task));
@@ -707,28 +695,30 @@ static bool runs_platform_tasks_on_current_thread(void *userdata)
     return pthread_equal(pthread_self(), platform_thread_id) != 0;
 }
 
+static bool path_exists(const char *path)
+{
+    return access(path, R_OK) == 0;
+}
+
 static bool init_paths(void)
 {
-#define PATH_EXISTS(path) (access((path),R_OK)==0)
-
-    if (!PATH_EXISTS(flutter.asset_bundle_path)) {
+    if (!path_exists(flutter.asset_bundle_path)) {
         debug("Asset Bundle Directory \"%s\" does not exist\n", flutter.asset_bundle_path);
         return false;
     }
 
     snprintf(flutter.kernel_blob_path, sizeof(flutter.kernel_blob_path), "%s/kernel_blob.bin",
              flutter.asset_bundle_path);
-    if (!PATH_EXISTS(flutter.kernel_blob_path)) {
+    if (!path_exists(flutter.kernel_blob_path)) {
         debug("Kernel blob does not exist inside Asset Bundle Directory.");
         return false;
     }
 
-    if (!PATH_EXISTS(flutter.icu_data_path)) {
+    if (!path_exists(flutter.icu_data_path)) {
         debug("ICU Data file not find at %s.\n", flutter.icu_data_path);
         return false;
     }
     return true;
-#undef PATH_EXISTS
 }
 
 static bool init_display(void)
@@ -740,21 +730,21 @@ static bool init_display(void)
     drmModeRes *resources = NULL;
     drmModeConnector *connector;
     drmModeEncoder *encoder = NULL;
-    int i, ok, area;
+    int ok, area;
 
     if (!drm.has_device) {
         debug("Finding a suitable DRM device, since none is given...");
         drmDevicePtr devices[64] = { NULL };
-        int num_devices, fd = -1;
+        int fd = -1;
 
-        num_devices = drmGetDevices2(0, devices, sizeof(devices) / sizeof(drmDevicePtr));
+        int num_devices = drmGetDevices2(0, devices, sizeof(devices) / sizeof(drmDevicePtr));
         if (num_devices < 0) {
             debug("could not query drm device list: %s\n", strerror(-num_devices));
             return false;
         }
 
         debug("looking for a suitable DRM device from %d available DRM devices...\n", num_devices);
-        for (i = 0; i < num_devices; i++) {
+        for (int i = 0; i < num_devices; i++) {
             drmDevicePtr device = devices[i];
 
             debug("  devices[%d]: \n", i);
@@ -850,7 +840,7 @@ static bool init_display(void)
 
     debug("Finding a connected connector from %d available connectors...\n", resources->count_connectors);
     connector = NULL;
-    for (i = 0; i < resources->count_connectors; i++) {
+    for (int i = 0; i < resources->count_connectors; i++) {
         drmModeConnector *conn = drmModeGetConnector(drm.fd, resources->connectors[i]);
 
         debug("  connectors[%d]: connected? %s, type: 0x%02X%s, %umm x %umm\n",
@@ -897,7 +887,7 @@ static bool init_display(void)
 
     debug("Choosing DRM mode from %d available modes...\n", connector->count_modes);
     bool found_preferred = false;
-    for (i = 0, area = 0; i < connector->count_modes; i++) {
+    for (int i = 0, area = 0; i < connector->count_modes; i++) {
         drmModeModeInfo *current_mode = &connector->modes[i];
 
         debug("  modes[%d]: name: \"%s\", %ux%u%s, %uHz, type: %u, flags: %u\n",
@@ -950,7 +940,7 @@ static bool init_display(void)
           refresh_rate, width_mm, height_mm, pixel_ratio);
 
     debug("Finding DRM encoder...");
-    for (i = 0; i < resources->count_encoders; i++) {
+    for (int i = 0; i < resources->count_encoders; i++) {
         encoder = drmModeGetEncoder(drm.fd, resources->encoders[i]);
         if (encoder->encoder_id == connector->encoder_id)
             break;
@@ -965,7 +955,7 @@ static bool init_display(void)
         return false;
     }
 
-    for (i = 0; i < resources->count_crtcs; i++) {
+    for (int i = 0; i < resources->count_crtcs; i++) {
         if (resources->crtcs[i] == drm.crtc_id) {
             drm.crtc_index = i;
             break;
@@ -1038,7 +1028,6 @@ static bool init_display(void)
         return false;
     }
 
-
     debug("Initializing EGL...");
     if (!eglInitialize(egl.display, &major, &minor)) {
         debug("failed to initialize EGL");
@@ -1049,7 +1038,6 @@ static bool init_display(void)
     egl_exts_dpy = eglQueryString(egl.display, EGL_EXTENSIONS);
     egl.modifiers_supported = strstr(egl_exts_dpy, "EGL_EXT_image_dma_buf_import_modifiers") != NULL;
 
-
     debug("Using display %p with EGL version %d.%d\n", egl.display, major, minor);
     debug("===================================");
     debug("EGL information:");
@@ -1058,7 +1046,6 @@ static bool init_display(void)
     debug("  client extensions: \"%s\"\n", egl_exts_client);
     debug("  display extensions: \"%s\"\n", egl_exts_dpy);
     debug("===================================");
-
 
     debug("Binding OpenGL ES API...");
     if (!eglBindAPI(EGL_OPENGL_ES_API)) {
@@ -1189,7 +1176,7 @@ static bool init_display(void)
 
 static void destroy_display(void)
 {
-    debug("Deinitializing display not yet implemented");
+    debug("destroy_display not yet implemented");
 }
 
 static bool init_application(void)
@@ -1279,8 +1266,6 @@ static bool init_application(void)
 
 static void destroy_application(void)
 {
-    int ok;
-
     if (engine != NULL) {
         if (FlutterEngineShutdown(engine) != kSuccess)
             debug("Could not shutdown the flutter engine.");
@@ -1429,7 +1414,7 @@ static bool run_io_thread(void)
         return false;
     }
 
-    ok = pthread_setname_np(io_thread_id, "flutter_embeder.io");
+    ok = pthread_setname_np(io_thread_id, "flutter_embedder.io");
     if (ok != 0) {
         error("couldn't set name of io thread: [%s]", strerror(ok));
         return false;
