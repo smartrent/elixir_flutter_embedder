@@ -1421,7 +1421,7 @@ static bool run_io_thread(void)
         return false;
     }
 
-    ok = pthread_setname_np(io_thread_id, "flutter_embedder.io");
+    ok = pthread_setname_np(io_thread_id, "io");
     if (ok != 0) {
         error("couldn't set name of io thread: [%s]", strerror(ok));
         return false;
