@@ -1446,13 +1446,17 @@ int main(int argc, char **argv)
 #endif
 #endif
 
-    if (argc != 3) {
-        error("Invalid Arguments");
+    if (argc < 3) {
+        error("flutter_embedder <asset bundle path> <icu path> [other args]");
         exit(EXIT_FAILURE);
     }
 
     snprintf(flutter.asset_bundle_path, sizeof(flutter.asset_bundle_path), "%s", argv[1]);
     snprintf(flutter.icu_data_path, sizeof(flutter.icu_data_path), "%s", argv[2]);
+
+    argv[2] = argv[0];
+    flutter.engine_argc = argc - 2;
+    flutter.engine_argv = (const char* const*) &(argv[2]);
 
     // check if asset bundle path is valid
     if (!init_paths()) {
