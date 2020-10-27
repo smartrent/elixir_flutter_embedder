@@ -65,8 +65,12 @@ if keys == [],
     See your project's config.exs for this error message.
     """)
 
+# `:tcpip_tunnel_in` lets you connect to the Flutter Observatory. Run
+# `ssh -L 38907:localhost:38907 nerves-0105.local` to forward the port out
+# and replace the port number with whatever port Flutter chooses.
 config :nerves_ssh,
-  authorized_keys: Enum.map(keys, &File.read!/1)
+  authorized_keys: Enum.map(keys, &File.read!/1),
+  daemon_option_overrides: [{:tcpip_tunnel_in, true}]
 
 # Configure the network using vintage_net
 # See https://github.com/nerves-networking/vintage_net for more information
