@@ -1397,11 +1397,15 @@ static void *io_loop(void *userdata)
 
     while (engine_running) {
         // debug("io poll");
-        struct pollfd fdset[1];
+        struct pollfd fdset[2];
 
         fdset[0].fd = fd;
         fdset[0].events = (POLLIN | POLLPRI | POLLHUP);
         fdset[0].revents = 0;
+
+        fdset[1].fd = drm.fd;
+        fdset[1].events = (POLLIN | POLLPRI | POLLHUP);
+        fdset[1].revents = 0;
 
         int rc = poll(fdset, 2, -1);
         if (rc < 0)
@@ -1409,6 +1413,9 @@ static void *io_loop(void *userdata)
 
         if (fdset[0].revents & (POLLIN | POLLHUP))
             process_io_events(fd);
+
+        if (fdset[1].revents & (POLLIN | POLLHUP))
+            drmHandleEvent(drm.fd, &drm.evctx);
     }
     return NULL;
 }
