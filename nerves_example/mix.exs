@@ -54,8 +54,9 @@ defmodule NervesExample.MixProject do
        organization: :smartrent, runtime: false, targets: :bbb},
       {
         :nerves_system_rpi3,
-        #  path: "~/nerves/nerves_system_br/o/configs/nerves_system_rpi3",
-        path: "~/workspace/flutter/nerves_system_rpi3", runtime: false, targets: :rpi3
+         path: "~/nerves/nerves_system_br/o/configs/nerves_system_rpi3_drm",
+        # path: "~/workspace/flutter/nerves_system_rpi3",
+        runtime: false, targets: :rpi3
       },
       {:flutter_embedder, path: "../"},
       {:input_event, "~> 0.4.0", targets: @all_targets}
