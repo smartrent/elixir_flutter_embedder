@@ -123,7 +123,8 @@ static uint32_t width, height;
 /// init_display will only update width_mm and height_mm if they are set to zero, allowing you
 ///   to hardcode values for you individual display.
 static uint32_t width_mm = 0, height_mm = 0;
-static uint32_t refresh_rate;
+static uint32_t refresh_rate = 60;
+static uint32_t refresh_period_ns = 16666666;
 
 /// The pixel ratio used by flutter.
 /// This is computed inside init_display using width_mm and height_mm.
@@ -609,7 +610,7 @@ static bool run_message_loop(void)
             }
 
             if (has_baton) {
-                FlutterEngineOnVsync(engine, baton, ns, ns + (1000000000ull / refresh_rate));
+                FlutterEngineOnVsync(engine, baton, ns, ns + refresh_period_ns);
             }
 
         } else if (task->type == kUpdateOrientation) {
@@ -910,6 +911,8 @@ static bool init_display(void)
             width = current_mode->hdisplay;
             height = current_mode->vdisplay;
             refresh_rate = current_mode->vrefresh;
+            refresh_period_ns = 1000000000ul / refresh_rate;
+
             area = current_area;
             orientation = width >= height ? kLandscapeLeft : kPortraitUp;
 
@@ -1276,7 +1279,7 @@ static void destroy_application(void)
 
 static bool init_io(void)
 {
-    FlutterPointerEvent flutterevents[64] = {0};
+    FlutterPointerEvent flutterevents[16] = {0};
 	size_t i_flutterevent = 0;
 	int n_flutter_slots = 0;
 
@@ -1320,23 +1323,25 @@ static void process_io_events(int fd) {
 
     size_t event_count = rd / sizeof(struct input_event);
     for (size_t i = 0; i < event_count; i++) {
-        if (io_input_buffer[i].type == EV_ABS) {
-            // debug("EV_ABS event code=%d value=%d\r\n", io_input_buffer[i].code, io_input_buffer[i].value);
+        struct input_event *e = &io_input_buffer[i];
 
-            if (io_input_buffer[i].code == ABS_X) {
-                mousepointer.x = io_input_buffer[i].value;
-            } else if (io_input_buffer[i].code == ABS_Y) {
-                mousepointer.y = io_input_buffer[i].value;
-            } else if (io_input_buffer[i].code == ABS_MT_TRACKING_ID && io_input_buffer[i].value == -1) {
+        if (e->type == EV_ABS) {
+            // debug("EV_ABS event code=%d value=%d\r\n", e->code, e->value);
+
+            if (e->code == ABS_X) {
+                mousepointer.x = e->value;
+            } else if (e->code == ABS_Y) {
+                mousepointer.y = e->value;
+            } else if (e->code == ABS_MT_TRACKING_ID && e->value == -1) {
             }
 
-        } else if(io_input_buffer[i].type == EV_KEY) {
-            if (io_input_buffer[i].code == BTN_TOUCH) {
-                mousepointer.phase = io_input_buffer[i].value ? kDown : kUp;
+        } else if(e->type == EV_KEY) {
+            if (e->code == BTN_TOUCH) {
+                mousepointer.phase = e->value ? kDown : kUp;
             } else {
-                debug("unknown EV_KEY code=%d value=%d\r\n", io_input_buffer[i].code, io_input_buffer[i].value);
+                debug("unknown EV_KEY code=%d value=%d\r\n", e->code, e->value);
             }
-        } else if(io_input_buffer[i].type == EV_SYN && io_input_buffer[i].code == SYN_REPORT) {
+        } else if(e->type == EV_SYN && e->code == SYN_REPORT) {
             // we don't want to send an event to flutter if nothing changed.
             if (mousepointer.phase == kCancel) continue;
 
@@ -1357,11 +1362,11 @@ static void process_io_events(int fd) {
                 fluttery = mousepointer.x;
             }
 
-            flutterevents[i_flutterevent++] = (FlutterPointerEvent) {
+            flutterevents[i_flutterevent] = (FlutterPointerEvent) {
                 .struct_size = sizeof(FlutterPointerEvent),
                 .phase = mousepointer.phase,
                 // .timestamp = FlutterEngineGetCurrentTime(),
-                .timestamp = io_input_buffer[i].time.tv_sec*1000000 + io_input_buffer[i].time.tv_usec,
+                .timestamp = e->time.tv_sec*1000000 + e->time.tv_usec,
                 .x = flutterx, .y = fluttery,
                 .device = mousepointer.flutter_slot_id,
                 .signal_kind = kFlutterPointerSignalKindNone,
@@ -1369,20 +1374,20 @@ static void process_io_events(int fd) {
                 .device_kind = kFlutterPointerDeviceKindTouch,
                 .buttons = 0
             };
-            debug("flutterevent[%d]", i_flutterevent - 1);
-            debug(" .x=%05f", flutterevents[i_flutterevent -1].x);
-            debug(" .y=%05f", flutterevents[i_flutterevent -1].y);
-            debug(" .phase=%d\r\n", flutterevents[i_flutterevent -1].phase);
+            // debug("flutterevent[%d]", i_flutterevent);
+            // debug(" .x=%05f", flutterevents[i_flutterevent].x);
+            // debug(" .y=%05f", flutterevents[i_flutterevent].y);
+            // debug(" .phase=%d\r\n", flutterevents[i_flutterevent].phase);
             mousepointer.phase = kCancel;
+            i_flutterevent++;
         } else {
-            debug("unknown input_event type=%d\r\n", io_input_buffer[i].type);
+            debug("unknown input_event type=%d\r\n", e->type);
         }
     }
 
     if (i_flutterevent == 0) return;
 
 	// now, send the data to the flutter engine
-    debug("sending %d flutter pointer events\r\n", i_flutterevent);
 	if (FlutterEngineSendPointerEvent(engine, flutterevents, i_flutterevent) != kSuccess) {
 		debug("could not send pointer events to flutter engine\r\n");
 	}
