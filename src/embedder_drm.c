@@ -199,13 +199,7 @@ static uint8_t i_batons = 0;
 static int scheduled_frames = 0;
 static pthread_t platform_thread_id;
 
-static struct engine_task tasklist = {
-    .next = NULL,
-    .type = kFlutterTask,
-    .target_time = 0,
-    .task = {.runner = NULL, .task = 0}
-};
-
+static struct engine_task *tasklist = NULL;
 static pthread_mutex_t tasklist_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  task_added = PTHREAD_COND_INITIALIZER;
 
@@ -566,23 +560,23 @@ static bool run_message_loop(void)
         pthread_mutex_lock(&tasklist_lock);
 
         // wait for a task to be inserted into the list
-        while (tasklist.next == NULL)
+        while (tasklist == NULL)
             pthread_cond_wait(&task_added, &tasklist_lock);
 
         // wait for a task to be ready to be run
         uint64_t currenttime;
-        while (tasklist.target_time > (currenttime = FlutterEngineGetCurrentTime())) {
+        while (tasklist->target_time > (currenttime = FlutterEngineGetCurrentTime())) {
             struct timespec abstargetspec;
             clock_gettime(CLOCK_REALTIME, &abstargetspec);
-            uint64_t abstarget = abstargetspec.tv_nsec + abstargetspec.tv_sec * 1000000000ull - currenttime;
+            uint64_t abstarget = abstargetspec.tv_nsec + abstargetspec.tv_sec * 1000000000ull + (tasklist->target_time - currenttime);
             abstargetspec.tv_nsec = abstarget % 1000000000;
             abstargetspec.tv_sec =  abstarget / 1000000000;
 
             pthread_cond_timedwait(&task_added, &tasklist_lock, &abstargetspec);
         }
 
-        struct engine_task *task = tasklist.next;
-        tasklist.next = tasklist.next->next;
+        struct engine_task *task = tasklist;
+        tasklist = tasklist->next;
 
         pthread_mutex_unlock(&tasklist_lock);
         if (task->type == kVBlankRequest || task->type == kVBlankReply) {
@@ -672,12 +666,20 @@ static void post_platform_task(struct engine_task *task)
 
     memcpy(to_insert, task, sizeof(struct engine_task));
     pthread_mutex_lock(&tasklist_lock);
-    struct engine_task *this = &tasklist;
-    while ((this->next) != NULL && (to_insert->target_time > this->next->target_time))
-        this = this->next;
+    if (tasklist == NULL || to_insert->target_time < tasklist->target_time) {
+        to_insert->next = tasklist;
+        tasklist = to_insert;
+    } else {
+        struct engine_task *prev = tasklist;
+        struct engine_task *current = tasklist->next;
+        while (current != NULL && to_insert->target_time > current->target_time) {
+            prev = current;
+            current = current->next;
+        }
+        to_insert->next = current;
+        prev->next = to_insert;
+    }
 
-    to_insert->next = this->next;
-    this->next = to_insert;
     pthread_mutex_unlock(&tasklist_lock);
     pthread_cond_signal(&task_added);
 }
