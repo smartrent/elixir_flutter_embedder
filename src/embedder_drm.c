@@ -56,26 +56,9 @@
 
 #define EGL_PLATFORM_GBM_KHR    0x31D7
 
-enum device_orientation {
-    kPortraitUp, kLandscapeLeft, kPortraitDown, kLandscapeRight
-};
-
-#define ANGLE_FROM_ORIENTATION(o) \
-    ((o) == kPortraitUp ? 0 : \
-     (o) == kLandscapeLeft ? 90 : \
-     (o) == kPortraitDown ? 180 : \
-     (o) == kLandscapeRight ? 270 : 0)
-
-#define FLUTTER_ROTATION_TRANSFORMATION(deg) ((FlutterTransformation) \
-            {.scaleX = cos(((double) (deg))/180.0*M_PI), .skewX  = -sin(((double) (deg))/180.0*M_PI), .transX = 0, \
-             .skewY  = sin(((double) (deg))/180.0*M_PI), .scaleY = cos(((double) (deg))/180.0*M_PI),  .transY = 0, \
-             .pers0  = 0,                   .pers1  = 0,                    .pers2  = 1})
-
-
 typedef enum {
     kVBlankRequest,
     kVBlankReply,
-    kUpdateOrientation,
     kSendPlatformMessage,
     kRespondToPlatformMessage,
     kFlutterTask
@@ -90,7 +73,6 @@ struct engine_task {
             uint64_t vblank_ns;
             intptr_t baton;
         };
-        enum device_orientation orientation;
         struct {
             char *channel;
             const FlutterPlatformMessageResponseHandle *responsehandle;
@@ -132,15 +114,6 @@ static uint32_t refresh_period_ns = 16666666;
 /// init_display will only update this value if it is equal to zero,
 ///   allowing you to hardcode values.
 static double pixel_ratio = 0.0;
-
-/// The current device orientation.
-/// The initial device orientation is based on the width & height data from drm.
-static enum device_orientation orientation;
-
-/// The angle between the initial device orientation and the current device orientation in degrees.
-/// (applied as a rotation to the flutter window in transformation_callback, and also
-/// is used to determine if width/height should be swapped when sending a WindowMetrics event to flutter)
-static int rotation = 0;
 
 static struct {
     char device[PATH_MAX];
@@ -514,37 +487,6 @@ static void vsync_callback(void *userdata, intptr_t baton)
     });
 }
 
-static FlutterTransformation transformation_callback(void *userdata)
-{
-    // report a transform based on the current device orientation.
-    static bool _transformsInitialized = false;
-    static FlutterTransformation rotate0, rotate90, rotate180, rotate270;
-
-    if (!_transformsInitialized) {
-        rotate0 = (FlutterTransformation) {
-            .scaleX = 1, .skewX  = 0, .transX = 0,
-            .skewY  = 0, .scaleY = 1, .transY = 0,
-            .pers0  = 0, .pers1  = 0, .pers2  = 1
-        };
-
-        rotate90 = FLUTTER_ROTATION_TRANSFORMATION(90);
-        rotate90.transX = width;
-        rotate180 = FLUTTER_ROTATION_TRANSFORMATION(180);
-        rotate180.transX = width;
-        rotate180.transY = height;
-        rotate270 = FLUTTER_ROTATION_TRANSFORMATION(270);
-        rotate270.transY = height;
-
-        _transformsInitialized = true;
-    }
-
-    if (rotation == 0) return rotate0;
-    else if (rotation == 90) return rotate90;
-    else if (rotation == 180) return rotate180;
-    else if (rotation == 270) return rotate270;
-    else return rotate0;
-}
-
 /************************
  * PLATFORM TASK-RUNNER *
  ************************/
@@ -606,23 +548,6 @@ static bool run_message_loop(void)
             if (has_baton) {
                 FlutterEngineOnVsync(engine, baton, ns, ns + refresh_period_ns);
             }
-
-        } else if (task->type == kUpdateOrientation) {
-            rotation += ANGLE_FROM_ORIENTATION(task->orientation) - ANGLE_FROM_ORIENTATION(orientation);
-            if (rotation < 0) rotation += 360;
-            else if (rotation >= 360) rotation -= 360;
-
-            orientation = task->orientation;
-
-            // send updated window metrics to flutter
-            FlutterEngineSendWindowMetricsEvent(engine, &(const FlutterWindowMetricsEvent) {
-                .struct_size = sizeof(FlutterWindowMetricsEvent),
-
-                // we send swapped width/height if the screen is rotated 90 or 270 degrees.
-                .width = (rotation == 0) || (rotation == 180) ? width : height,
-                .height = (rotation == 0) || (rotation == 180) ? height : width,
-                .pixel_ratio = pixel_ratio
-            });
 
         } else if (task->type == kSendPlatformMessage || task->type == kRespondToPlatformMessage) {
             if (task->type == kSendPlatformMessage) {
@@ -916,7 +841,6 @@ static bool init_display(void)
             refresh_period_ns = 1000000000ul / refresh_rate;
 
             area = current_area;
-            orientation = width >= height ? kLandscapeLeft : kPortraitUp;
 
             // if the preferred DRM mode is bogus, we're screwed.
             if (current_mode->type & DRM_MODE_TYPE_PREFERRED) {
@@ -1196,7 +1120,7 @@ static bool init_application(void)
     flutter.renderer_config.open_gl.present         = present;
     flutter.renderer_config.open_gl.fbo_callback    = fbo_callback;
     flutter.renderer_config.open_gl.gl_proc_resolver = proc_resolver;
-    flutter.renderer_config.open_gl.surface_transformation = transformation_callback;
+    flutter.renderer_config.open_gl.surface_transformation = NULL;
 
     // configure flutter
     flutter.args.struct_size                = sizeof(FlutterProjectArgs);
@@ -1350,19 +1274,8 @@ static void process_io_events(int fd) {
             // convert raw pixel coordinates to flutter pixel coordinates
             // (raw pixel coordinates don't respect screen rotation)
             double flutterx, fluttery;
-            if (rotation == 0) {
-                flutterx = mousepointer.x;
-                fluttery = mousepointer.y;
-            } else if (rotation == 90) {
-                flutterx = mousepointer.y;
-                fluttery = width - mousepointer.x;
-            } else if (rotation == 180) {
-                flutterx = width - mousepointer.x;
-                fluttery = height - mousepointer.y;
-            } else if (rotation == 270) {
-                flutterx = height - mousepointer.y;
-                fluttery = mousepointer.x;
-            }
+            flutterx = mousepointer.x;
+            fluttery = mousepointer.y;
 
             flutterevents[i_flutterevent] = (FlutterPointerEvent) {
                 .struct_size = sizeof(FlutterPointerEvent),
