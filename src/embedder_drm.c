@@ -59,8 +59,6 @@
 typedef enum {
     kVBlankRequest,
     kVBlankReply,
-    kSendPlatformMessage,
-    kRespondToPlatformMessage,
     kFlutterTask
 } engine_task_type;
 
@@ -307,7 +305,7 @@ static bool present(void *userdata)
     struct gbm_bo *next_bo = gbm_surface_lock_front_buffer(gbm.surface);
     struct drm_fb *fb = drm_fb_get_from_bo(next_bo);
 
-    int ok = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id, DRM_MODE_PAGE_FLIP_EVENT, drm.previous_bo);
+    int ok = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id, DRM_MODE_PAGE_FLIP_EVENT, NULL);
     if (ok) {
         perror("failed to queue page flip");
         return false;
@@ -503,62 +501,30 @@ static bool run_message_loop(void)
         tasklist = tasklist->next;
 
         pthread_mutex_unlock(&tasklist_lock);
-        if (task->type == kVBlankRequest || task->type == kVBlankReply) {
-            intptr_t baton;
-            bool     has_baton = false;
-            uint64_t ns;
+        if (task->type == kVBlankRequest) {
+            if (scheduled_frames == 0) {
+                uint64_t ns;
+                drmCrtcGetSequence(drm.fd, drm.crtc_id, NULL, &ns);
+                FlutterEngineOnVsync(engine, task->baton, ns, ns + refresh_period_ns);
+            } else {
+                batons[(i_batons + (scheduled_frames - 1)) & 63] = task->baton;
 
-            if (task->type == kVBlankRequest) {
-                if (scheduled_frames == 0) {
-                    baton = task->baton;
-                    has_baton = true;
-                    drmCrtcGetSequence(drm.fd, drm.crtc_id, NULL, &ns);
-                } else {
-                    batons[(i_batons + (scheduled_frames - 1)) & 63] = task->baton;
-                }
-                scheduled_frames++;
-            } else if (task->type == kVBlankReply) {
-                if (scheduled_frames > 1) {
-                    baton = batons[i_batons];
-                    has_baton = true;
-                    i_batons = (i_batons + 1) & 63;
-                    ns = task->vblank_ns;
-                }
-                scheduled_frames--;
             }
-
-            if (has_baton) {
+            scheduled_frames++;
+        } else if (task->type == kVBlankReply) {
+            if (scheduled_frames > 1) {
+                intptr_t baton = batons[i_batons];
+                i_batons = (i_batons + 1) & 63;
+                uint64_t ns = task->vblank_ns;
                 FlutterEngineOnVsync(engine, baton, ns, ns + refresh_period_ns);
             }
-
-        } else if (task->type == kSendPlatformMessage || task->type == kRespondToPlatformMessage) {
-            if (task->type == kSendPlatformMessage) {
-                FlutterEngineSendPlatformMessage(
-                    engine,
-                &(const FlutterPlatformMessage) {
-                    .struct_size = sizeof(FlutterPlatformMessage),
-                    .channel = task->channel,
-                    .message = task->message,
-                    .message_size = task->message_size,
-                    .response_handle = task->responsehandle
-                }
-                );
-
-                free(task->channel);
-            } else if (task->type == kRespondToPlatformMessage) {
-                FlutterEngineSendPlatformMessageResponse(
-                    engine,
-                    task->responsehandle,
-                    task->message,
-                    task->message_size
-                );
+            scheduled_frames--;
+        } else if (task->type == kFlutterTask) {
+            if (FlutterEngineRunTask(engine, &task->task) != kSuccess) {
+                debug("Error running platform task");
+                return false;
             }
-
-            free(task->message);
-        } else if (FlutterEngineRunTask(engine, &task->task) != kSuccess) {
-            debug("Error running platform task");
-            return false;
-        };
+        }
 
         free(task);
     }
@@ -640,7 +606,7 @@ static bool init_display(void)
     drmModeRes *resources = NULL;
     drmModeConnector *connector;
     drmModeEncoder *encoder = NULL;
-    int ok, area;
+    int ok;
 
     if (!drm.has_device) {
         debug("Finding a suitable DRM device, since none is given...");
