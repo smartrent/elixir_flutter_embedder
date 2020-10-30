@@ -470,14 +470,6 @@ static void *proc_resolver(void *userdata, const char *name)
     return NULL;
 }
 
-static void on_platform_message(const FlutterPlatformMessage *message, void *userdata)
-{
-    // FlutterEngineRunTask(engine, &task);
-    // FlutterEngineSendPlatformMessageResponse(engine, message->response_handle, message->message, message->message_size);
-    // debug("platform message stub");
-    FlutterEngineSendPlatformMessage(engine, message);
-}
-
 static void vsync_callback(void *userdata, intptr_t baton)
 {
     post_platform_task(&(struct engine_task) {
@@ -1136,7 +1128,7 @@ static bool init_application(void)
     flutter.args.vm_snapshot_instructions   = NULL;
     flutter.args.command_line_argc          = flutter.engine_argc;
     flutter.args.command_line_argv          = flutter.engine_argv;
-    flutter.args.platform_message_callback  = on_platform_message;
+    flutter.args.platform_message_callback  = NULL; // Not needed yet.
     flutter.args.custom_task_runners        = &(FlutterCustomTaskRunners) {
         .struct_size = sizeof(FlutterCustomTaskRunners),
         .platform_task_runner = &(FlutterTaskRunnerDescription) {
