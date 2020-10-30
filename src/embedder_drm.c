@@ -125,7 +125,6 @@ static struct {
     size_t crtc_index;
     struct gbm_bo *previous_bo;
     drmEventContext evctx;
-    bool disable_vsync;
 } drm = {0};
 
 static struct {
@@ -308,19 +307,10 @@ static bool present(void *userdata)
     struct gbm_bo *next_bo = gbm_surface_lock_front_buffer(gbm.surface);
     struct drm_fb *fb = drm_fb_get_from_bo(next_bo);
 
-    // workaround for #38
-    if (!drm.disable_vsync) {
-        int ok = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id, DRM_MODE_PAGE_FLIP_EVENT, drm.previous_bo);
-        if (ok) {
-            perror("failed to queue page flip");
-            return false;
-        }
-    } else {
-        int ok = drmModeSetCrtc(drm.fd, drm.crtc_id, fb->fb_id, 0, 0, &drm.connector_id, 1, drm.mode);
-        if (ok == -1) {
-            perror("failed swap buffers");
-            return false;
-        }
+    int ok = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id, DRM_MODE_PAGE_FLIP_EVENT, drm.previous_bo);
+    if (ok) {
+        perror("failed to queue page flip");
+        return false;
     }
 
     gbm_surface_release_buffer(gbm.surface, drm.previous_bo);
@@ -1102,8 +1092,6 @@ static void destroy_display(void)
 
 static bool init_application(void)
 {
-    int ok, _errno;
-
     // configure flutter rendering
     flutter.renderer_config.type = kOpenGL;
     flutter.renderer_config.open_gl.struct_size     = sizeof(flutter.renderer_config.open_gl);
@@ -1129,6 +1117,7 @@ static bool init_application(void)
     flutter.args.command_line_argc          = flutter.engine_argc;
     flutter.args.command_line_argv          = flutter.engine_argv;
     flutter.args.platform_message_callback  = NULL; // Not needed yet.
+    flutter.args.vsync_callback = vsync_callback; // See flutter-pi fix if display driver doesn't provide vblank timestamps
     flutter.args.custom_task_runners        = &(FlutterCustomTaskRunners) {
         .struct_size = sizeof(FlutterCustomTaskRunners),
         .platform_task_runner = &(FlutterTaskRunnerDescription) {
@@ -1138,24 +1127,6 @@ static bool init_application(void)
             .post_task_callback = &flutter_post_platform_task
         }
     };
-
-    // only enable vsync if the kernel supplies valid vblank timestamps
-    uint64_t ns = 0;
-    ok = drmCrtcGetSequence(drm.fd, drm.crtc_id, NULL, &ns);
-    if (ok != 0) _errno = errno;
-
-    if ((ok == 0) && (ns != 0)) {
-        drm.disable_vsync = false;
-        flutter.args.vsync_callback = vsync_callback;
-    } else {
-        drm.disable_vsync = true;
-        if (ok != 0) {
-            debug("Could not get last vblank timestamp. %s", strerror(_errno));
-        } else {
-            debug("Kernel didn't return a valid vblank timestamp. (timestamp == 0)");
-        }
-        debug("VSync will be disabled");
-    }
 
     // spin up the engine
     FlutterEngineResult _result = FlutterEngineRun(FLUTTER_ENGINE_VERSION, &flutter.renderer_config,
@@ -1170,7 +1141,7 @@ static bool init_application(void)
     engine_running = true;
 
     // update window size
-    ok = FlutterEngineSendWindowMetricsEvent(
+    int ok = FlutterEngineSendWindowMetricsEvent(
              engine,
     &(FlutterWindowMetricsEvent) {
         .struct_size = sizeof(FlutterWindowMetricsEvent), .width = width, .height = height, .pixel_ratio = pixel_ratio
