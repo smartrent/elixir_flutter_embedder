@@ -14,7 +14,7 @@ else
 SRC += embedder_drm.c
 # drm
 CFLAGS += $(shell pkg-config libdrm --cflags)
-CFLAGS += -DBUILD_ERLCMD_PLUGIN
+CFLAGS += -DBUILD_ERLCMD_PLUGIN -Wall
 
 LDFLAGS += $(shell pkg-config libdrm --libs)
 # LDFLAGS += -ldrm  -ldl -lgbm -lGLESv2 -lEGL -lglfw -pthread

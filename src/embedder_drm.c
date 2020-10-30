@@ -629,7 +629,6 @@ static bool init_display(void)
             if (device->available_nodes & (1 << DRM_NODE_PRIMARY)) debug("DRM_NODE_PRIMARY, ");
             if (device->available_nodes & (1 << DRM_NODE_CONTROL)) debug("DRM_NODE_CONTROL, ");
             if (device->available_nodes & (1 << DRM_NODE_RENDER))  debug("DRM_NODE_RENDER");
-            debug("");
 
             for (int j = 0; j < DRM_NODE_MAX; j++) {
                 if (device->available_nodes & (1 << j)) {
