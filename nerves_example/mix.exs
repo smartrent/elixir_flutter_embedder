@@ -58,7 +58,9 @@ defmodule NervesExample.MixProject do
         path: "~/workspace/flutter/nerves_system_rpi3", runtime: false, targets: :rpi3
       },
       {:flutter_embedder, path: "../"},
-      {:input_event, "~> 0.4.0", targets: @all_targets}
+      {:input_event, "~> 0.4.0", targets: @all_targets},
+      {:nerves_system_br, "~> 1.13", override: true},
+      {:power_control, github: "cjfreeze/power_control", targets: @all_targets}
     ]
   end
 

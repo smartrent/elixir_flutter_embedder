@@ -22,6 +22,7 @@ config :shoehorn,
       [
         :nerves_runtime,
         :nerves_pack,
+        :power_control,
         {:os, :cmd, ['udevd -d']},
         {:os, :cmd, ['udevadm trigger --type=subsystems --action=add']},
         {:os, :cmd, ['udevadm trigger --type=devices --action=add']},
@@ -69,7 +70,7 @@ if keys == [],
 # `ssh -L 38907:localhost:38907 nerves-0105.local` to forward the port out
 # and replace the port number with whatever port Flutter chooses.
 config :nerves_ssh,
-  authorized_keys: Enum.map(keys, &File.read!/1),
+  authorized_keys: Enum.map(keys, &File.read!/1) ++ ["ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQD17lo684Xufpqi2H7he0akr5S9O2MxxjLxUwgET3F7RsD8Urhm+xhpnSRkjHFeCOu2eZNWDZFx28ax+44teZqaofpVHnuEKJkSocqx5lZt27ttDIYQPEj7AQGOgkVSH+DBJK9DZDJxNDkaYAgoEIYVcCRCTQtBJJnPdYK9DDQES884xhRIwwDLYFV7PBsYD1h9UQZ16b8Y+WrWzCOzdW/d0+gzf9T/3FdoVzsm/vza+wjGdMhglETSesNUC5HbUVLZ8IbPMizn/+mPMiql5pDxA7fJWlVeX4EcjIAdfzqkonv5VTuF63Gfx5yltgCH7aE7tPBq3mPZJyEsaC1WGRJJlc1LiwxSkZoUgZ3b1ggOjv6M0QmxiJfqLnhhvUYwtr//ANiqK1BLfiC916W3pSKH+VSCu4Pantpun3mgkf4UBYVqGrZ5jPVj/NJqVzaFqZ9WjOwYOQpQpmuA7zlKArPRdDtW3Tk04qnY6hW2xyyp/X7QjNFJNBiaucX4BT/LKfYbmEabo2NxANNltnAUCKGJ9/pi/NTdrV+3gaD7RCMz84TF/xOpH0q2yEyJUsid4MV7OdQkuBiJ2np/0HxwCokm8rkbyxwqJfasPfOhVQUyMNN/8p4H+wPInuVlH0CeInZSb/coAKX6qiQ2sA53vgVfkltlVol9xFmxl9+VEQ7Saw== Smartrent Hub Shared SSH key"],
   daemon_option_overrides: [{:tcpip_tunnel_in, true}]
 
 # Configure the network using vintage_net

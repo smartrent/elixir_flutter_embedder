@@ -1,10 +1,10 @@
 #!/bin/sh
 
-# _build/bbb_dev/lib/flutter_embedder/priv/flutter_embedder
+# _build/rpi3_dev/lib/flutter_embedder/priv/flutter_embedder
 mix compile
-sftp -b /dev/stdin 192.168.1.140 << EOF
+sftp -b /dev/stdin 192.168.1.127 << EOF
 cd /root
-put _build/bbb_dev/lib/flutter_embedder/priv/flutter_embedder
+put _build/rpi3_dev/lib/flutter_embedder/priv/flutter_embedder
 EOF
 
 echo Done.
