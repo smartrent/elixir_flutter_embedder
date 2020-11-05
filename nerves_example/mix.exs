@@ -8,6 +8,7 @@ defmodule NervesExample.MixProject do
   def project do
     [
       app: @app,
+      name: "flutter_demo",
       version: @version,
       elixir: "~> 1.9",
       archives: [nerves_bootstrap: "~> 1.8"],
@@ -42,12 +43,16 @@ defmodule NervesExample.MixProject do
       # Dependencies for all targets
       {:nerves, "~> 1.6.0 or ~> 1.7.0", runtime: false},
       {:shoehorn, "~> 0.6"},
-      {:ring_logger, "~> 0.6"},
+      {:ring_logger, "~> 0.8"},
       {:toolshed, "~> 0.2"},
+      {:nerves_hub_cli, "~> 0.8", runtime: false},
 
       # Dependencies for all targets except :host
       {:nerves_runtime, "~> 0.6", targets: @all_targets},
       {:nerves_pack, "~> 0.4", targets: @all_targets},
+      {:nerves_hub_link, "~> 0.7", targets: @all_targets},
+      {:nerves_key, "~> 0.5", targets: @all_targets},
+      {:nerves_key_pkcs11, "~> 0.2", targets: @all_targets},
 
       # Dependencies for specific targets
       {:nerves_system_bbb_sgx, "~> 2.7.2",
@@ -66,7 +71,6 @@ defmodule NervesExample.MixProject do
   def release do
     [
       overwrite: true,
-      cookie: "#{@app}_cookie",
       include_erts: &Nerves.Release.erts/0,
       steps: [&Nerves.Release.init/1, :assemble],
       strip_beams: Mix.env() == :prod

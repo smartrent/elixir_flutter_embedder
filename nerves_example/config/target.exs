@@ -45,6 +45,17 @@ config :nerves,
     ctty: "ttyAMA0"
   ]
 
+config :nerves_hub_cli, org: "smartrent"
+
+config :nerves_hub_link,
+  fwup_public_keys: [
+    # flutter_demo_key
+    "mHkOXo99PW5vIcQTRZy1ed0Zs1ahP80PiPMe3OUfGcY="
+  ],
+  nerves_key: [i2c_bus: 1],
+  org: "smartrent",
+  remote_iex: true
+
 # Authorize the device to receive firmware using your public key.
 # See https://hexdocs.pm/nerves_firmware_ssh/readme.html for more information
 # on configuring nerves_firmware_ssh.
