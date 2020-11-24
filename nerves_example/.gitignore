@@ -21,3 +21,4 @@ example.iml
 /ios
 /.idea
 nerves-hub
+.packages
