@@ -52,7 +52,8 @@ config :nerves_hub_cli, org: "smartrent-flutter"
 config :nerves_hub_link,
   fwup_public_keys: [
     # flutter_demo_key
-    "mHkOXo99PW5vIcQTRZy1ed0Zs1ahP80PiPMe3OUfGcY="
+    "mHkOXo99PW5vIcQTRZy1ed0Zs1ahP80PiPMe3OUfGcY=",
+    "xmZKOcdt8kwJwSd4Z2Vp9q595BrKXlrpQr5WrVY6R+E="
   ],
   nerves_key: [i2c_bus: 1],
   org: "smartrent-flutter",
