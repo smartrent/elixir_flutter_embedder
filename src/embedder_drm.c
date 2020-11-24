@@ -1236,6 +1236,7 @@ static void process_io_events(int fd) {
 	}
 }
  // cmd("/root/flutter_embedder /srv/erlang/lib/nerves_example-0.1.0/priv/flutter_assets /srv/erlang/lib/flutter_embedder-0.1.0/priv/icudtl.dat")
+ // cmd("/srv/erlang/lib/flutter_embedder-0.1.0/priv/flutter_embedder /srv/erlang/lib/nerves_example-0.1.0/priv/flutter_assets /srv/erlang/lib/flutter_embedder-0.1.0/priv/icudtl.dat")
 static void *io_loop(void *userdata)
 {
     const char *input_path = "/dev/input/event0";

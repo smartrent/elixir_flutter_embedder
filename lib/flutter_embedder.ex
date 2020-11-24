@@ -98,8 +98,8 @@ defmodule FlutterEmbedder do
   @doc false
   def sanity_check([flutter_assets]) do
     true = "vm_snapshot_data" in File.ls!(flutter_assets)
-    # icudtl_file = Application.app_dir(:flutter_embedder, ["priv", "icudtl.dat"])
-    icudtl_file = "icudtl.dat"
+    icudtl_file = Application.app_dir(:flutter_embedder, ["priv", "icudtl.dat"])
+    # icudtl_file = "icudtl.dat"
     {:ok, ["#{flutter_assets}", "#{icudtl_file}"]}
   end
 
