@@ -1,7 +1,0 @@
-%{
-  "blue_heron": {:hex, :blue_heron, "0.1.0", "eba980dc10030f5c66e1ec92e693524d9aa92a0c7b3acec7baa19278efa1676d", [:mix], [{:ex_bin, "~> 0.4", [hex: :ex_bin, repo: "hexpm", optional: false]}], "hexpm", "b2600081d8e05d3d56748401e53c06eab888591b4289f47a36f746efed9e6b2b"},
-  "blue_heron_transport_usb": {:hex, :blue_heron_transport_usb, "0.1.0", "7548d6503deb9b7a5c03c593512a754bf788075e8133174a88cdfd830c395a8d", [:make, :mix], [{:blue_heron, "~> 0.1.0", [hex: :blue_heron, repo: "hexpm", optional: false]}, {:elixir_make, "~> 0.6.0", [hex: :elixir_make, repo: "hexpm", optional: false]}], "hexpm", "87d3b3382fc648b227978526b61e5a3448c0dfee4fc37258bc40a441921dd395"},
-  "elixir_make": {:hex, :elixir_make, "0.6.0", "38349f3e29aff4864352084fc736fa7fa0f2995a819a737554f7ebd28b85aaab", [:mix], [], "hexpm", "d522695b93b7f0b4c0fcb2dfe73a6b905b1c301226a5a55cb42e5b14d509e050"},
-  "ex_bin": {:hex, :ex_bin, "0.4.0", "c86513598a6fd35f018966607f3e8996e6b16324094e8939d163e671ab7c184e", [:mix], [], "hexpm", "223ae53e25ac2874f1b8f469d11a75926bb068a35e8008603c2ede4277cece6c"},
-  "jason": {:hex, :jason, "1.2.1", "12b22825e22f468c02eb3e4b9985f3d0cb8dc40b9bd704730efa11abd2708c44", [:mix], [{:decimal, "~> 1.0", [hex: :decimal, repo: "hexpm", optional: true]}], "hexpm", "b659b8571deedf60f79c5a608e15414085fa141344e2716fbd6988a084b5f993"},
-}
