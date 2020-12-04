@@ -1,4 +1,5 @@
 defmodule FlutterEmbedder do
+  @moduledoc File.read!("README.md")
   alias FlutterEmbedder.{PlatformChannelMessage, StandardMessageCodec, StandardMethodCall}
   import StandardMessageCodec, only: [is_valid_dart_value: 1]
   defstruct [:port, :module, :uri]

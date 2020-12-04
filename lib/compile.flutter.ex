@@ -1,4 +1,4 @@
-defmodule Mix.Tasks.Compile.FlutterEmbedder do
+defmodule Mix.Tasks.Compile.Flutter do
   use Mix.Task.Compiler
 
   @recursive true
