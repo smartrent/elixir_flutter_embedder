@@ -29,6 +29,12 @@ both below:
 * [Nerves](https://hexdocs.pm/nerves/1.3.2/installation.html#content)
 * [Flutter](https://flutter.dev/docs/get-started/install)
 
+> NOTE: Currently this project is only compatible with Flutter 1.22.4.
+
+```bash
+flutter version 1.22.4
+```
+
 Once that's complete create a new folder for your project and then scafold two
 applications:
 

@@ -26,7 +26,16 @@ defmodule Mix.Tasks.Compile.Flutter do
   @shortdoc @moduledoc
 
   def clean() do
-    System.cmd("flutter", ["clean"], into: IO.stream(:stdio, :line))
+    flutter_config = Mix.Project.config()[:flutter]
+    cwd = File.cwd!()
+
+    if flutter_config[:cd] do
+      raise "???"
+      File.cd!(flutter_config[:cd])
+    end
+
+    System.cmd("flutter", ["clean"], into: IO.stream(:stdio, :line), cd: flutter_config[:cd])
+    File.cd!(cwd)
   end
 
   def run(args) do
@@ -52,14 +61,14 @@ defmodule Mix.Tasks.Compile.Flutter do
 
     cond do
       "--force" in args ->
-        recompile(priv_dir)
+        recompile(flutter_config, priv_dir)
 
       # naive check for created/deleted files.
       Enum.count(target_manifest) == Enum.count(manifest) ->
-        maybe_recompile(target_manifest, manifest, priv_dir)
+        maybe_recompile(flutter_config, target_manifest, manifest, priv_dir)
 
       true ->
-        recompile(priv_dir)
+        recompile(flutter_config, priv_dir)
     end
 
     write_manifest(target_manifest, manifest_file)
@@ -67,14 +76,20 @@ defmodule Mix.Tasks.Compile.Flutter do
     {:ok, []}
   end
 
-  def recompile(priv_dir) do
+  def recompile(flutter_config, priv_dir) do
     Mix.shell().info("Compiling Flutter assets")
     flutter_assets = Path.join(priv_dir, "flutter_assets")
-    {_, 0} = System.cmd("flutter", ["build", "bundle"], into: IO.stream(:stdio, :line))
+
+    {_, 0} =
+      System.cmd("flutter", ["build", "bundle"],
+        into: IO.stream(:stdio, :line),
+        cd: flutter_config[:cd]
+      )
+
     File.cp_r!("build/flutter_assets", flutter_assets)
   end
 
-  def maybe_recompile(target_manifest, manifest, app_dir) do
+  def maybe_recompile(flutter_config, target_manifest, manifest, app_dir) do
     should_recompile? =
       Enum.reduce(0..Enum.count(target_manifest), false, fn
         _, true ->
@@ -84,7 +99,7 @@ defmodule Mix.Tasks.Compile.Flutter do
           Enum.at(target_manifest, index) != Enum.at(manifest, index)
       end)
 
-    if should_recompile?, do: recompile(app_dir)
+    if should_recompile?, do: recompile(flutter_config, app_dir)
   end
 
   def read_manifest(manifest_file) do

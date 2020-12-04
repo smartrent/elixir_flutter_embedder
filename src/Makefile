@@ -31,6 +31,7 @@ ifeq ($(CROSSCOMPILE),)
 include precompiled_engine_x86_64.mk
 else
 include precompiled_engine_armv7.mk
+# include precompiled_engine_aarch64.mk
 endif
 
 format:

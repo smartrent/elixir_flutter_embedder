@@ -1,5 +1,5 @@
 ZIPFILE=linux-x64-embedder.zip
-FLUTTER_ENGINE_VERSION = 9d5b21729ff53dbf8eadd8bc97e0e30d77abec95
+FLUTTER_ENGINE_VERSION = 2c956a31c0a3d350827aee6c56bb63337c5b4e6e
 
 $(PREFIX)/libflutter_engine.so: $(ZIPFILE)
 	unzip -p $(ZIPFILE) libflutter_engine.so > $(PREFIX)/libflutter_engine.so
