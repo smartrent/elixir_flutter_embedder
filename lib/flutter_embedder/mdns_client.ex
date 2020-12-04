@@ -4,7 +4,6 @@ defmodule FlutterEmbedder.MDNSClient do
   require Logger
   @mdns_group {224, 0, 0, 251}
   @mdns_port 5353
-  @domain 'Flutter Observatory._dartobservatory._tcp.local'
 
   defmodule State do
     defstruct mdns_socket: nil, discovered: []
@@ -82,29 +81,38 @@ defmodule FlutterEmbedder.MDNSClient do
   def handle_info({:udp, socket, ip, _port, packet}, %{mdns_socket: socket} = state) do
     record = DNS.Record.decode(packet)
     state = handle_mdns(record.anlist, ip, state)
+    # IO.inspect(record.anlist, label: "???")
     {:noreply, state}
   end
 
-  # i'm so sorry about this
-  defp handle_mdns([%{type: :txt, domain: @domain, data: data, ttl: ttl} | rest], ip, state) do
+  # i'm so sorry about this. It's not the correct way to do this.
+  # I don't think an MDNS client is the solution to this long term
+  # since it won't work on macos
+  defp handle_mdns([%{type: :txt, domain: domain, data: data, ttl: ttl} | rest], ip, state) do
     state =
-      case URI.decode_query(to_string(data)) do
-        %{"port" => port, "path" => path} ->
-          port = String.to_integer(port)
-          uri = %URI{scheme: "http", host: to_string(:inet.ntoa(ip)), port: port, path: path}
+      case String.split(to_string(domain), ".") do
+        [host, "_dartobservatory", "_tcp", "local"] ->
+          case URI.decode_query(to_string(data)) do
+            %{"port" => port, "path" => path} ->
+              port = String.to_integer(port)
+              uri = %URI{scheme: "http", host: "#{host}.local", port: port, path: path}
 
-          duplicate_uri =
-            Enum.find(state.discovered, fn
-              {_, ^uri} -> true
-              _ -> false
-            end)
+              duplicate_uri =
+                Enum.find(state.discovered, fn
+                  {_, ^uri} -> true
+                  _ -> false
+                end)
 
-          if duplicate_uri do
-            state
-          else
-            ref = make_ref()
-            Process.send_after(self(), {:ttl, ref}, ttl * 1000)
-            %{state | discovered: [{ref, uri} | state.discovered]}
+              if duplicate_uri do
+                state
+              else
+                ref = make_ref()
+                Process.send_after(self(), {:ttl, ref}, ttl * 1000)
+                %{state | discovered: [{ref, uri} | state.discovered]}
+              end
+
+            _ ->
+              state
           end
 
         _ ->

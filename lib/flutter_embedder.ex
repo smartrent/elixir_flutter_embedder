@@ -2,7 +2,7 @@ defmodule FlutterEmbedder do
   @moduledoc File.read!("README.md")
   alias FlutterEmbedder.{PlatformChannelMessage, StandardMessageCodec, StandardMethodCall}
   import StandardMessageCodec, only: [is_valid_dart_value: 1]
-  defstruct [:port, :module, :uri]
+  defstruct [:port, :uri]
 
   require Logger
   use GenServer, child_spec: false
@@ -10,19 +10,19 @@ defmodule FlutterEmbedder do
   def child_spec(opts) do
     %{
       id: __MODULE__,
-      start: {__MODULE__, :start_link, opts},
+      start: {__MODULE__, :start_link, [opts]},
       type: :worker,
       restart: :permanent,
       shutdown: 500
     }
   end
 
-  def start_link(standard_method_call_handler, flutter_assets, opts \\ []) do
-    GenServer.start_link(__MODULE__, [standard_method_call_handler, flutter_assets], opts)
+  def start_link(args, opts \\ []) do
+    GenServer.start_link(__MODULE__, args, opts)
   end
 
   @impl GenServer
-  def init([module | args]) do
+  def init(args) do
     case sanity_check(args) do
       {:ok, args} ->
         Logger.info("#{port_executable()} #{Enum.join(args, " ")}")
@@ -38,7 +38,7 @@ defmodule FlutterEmbedder do
              [{'LD_LIBRARY_PATH', to_charlist(Application.app_dir(:flutter_embedder, ["priv"]))}]}
           ])
 
-        {:ok, %__MODULE__{module: module, port: port}}
+        {:ok, %__MODULE__{port: port}}
     end
   end
 
@@ -122,10 +122,15 @@ defmodule FlutterEmbedder do
 
   # TODO Check for errors instead of raising
   @doc false
-  def sanity_check([flutter_assets]) do
+  def sanity_check(args) do
+    flutter_assets =
+      args[:flutter_assets] || raise ArgumentError, "`flutter_assets` is a required argument"
+
     true = "vm_snapshot_data" in File.ls!(flutter_assets)
-    icudtl_file = Application.app_dir(:flutter_embedder, ["priv", "icudtl.dat"])
-    # icudtl_file = "icudtl.dat"
+
+    icudtl_file =
+      args[:icudtl_file] || Application.app_dir(:flutter_embedder, ["priv", "icudtl.dat"])
+
     {:ok, ["#{flutter_assets}", "#{icudtl_file}"]}
   end
 

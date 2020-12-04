@@ -96,6 +96,13 @@ def children(_target) do
 end
 ```
 
+> NOTE: By default Flutter uses `Ariel` font. These fonts require a license aggreement and are not
+supplied in this project. To boot flutter on your device, you will need this file in your `firmware` project:
+
+```shell
+f11c0317db527bdd80fa0afa04703441  rootfs_overlay/usr/share/fonts/truetype/msttcorefonts/Arial.ttf
+```
+
 Finally, to get the application up and running, follow the standard Nerves
 workflow:
 
@@ -157,3 +164,7 @@ device. Next copy the `url` section into your clipboard.
 Finally back in the `ui` editor, press `F5` and when it prompts you for a URL, paste the `url` from
 your clipboard. This will automatically connect to a debug session on the device. Every save you make to
 the Dart code will automatically sync over to the device.
+
+> NOTE: It must be noted that the `port` and `path` of this URL will change every time the Dart applicaiton
+is restarted, for example, reboot, crash, firmware upgrade etc. This means you will need to rerun this mix
+task every time one of those events happen.

@@ -1,7 +1,29 @@
 defmodule Mix.Tasks.Compile.Flutter do
+  @moduledoc """
+  Light wrapper around the `flutter build bundle` command.
+
+  Usage:
+
+      def project do
+        [
+          compilers: Mix.compilers() ++ [:flutter],
+          flutter: [
+            cd: Path.expand("../ui", __DIR__)
+          ]
+        ]
+      end
+
+  See h(FlutterEmbedder) or the README.md for more info
+
+  ## Options
+
+      cd: directory to change into before compiling
+  """
+
   use Mix.Task.Compiler
 
   @recursive true
+  @shortdoc @moduledoc
 
   def clean() do
     System.cmd("flutter", ["clean"], into: IO.stream(:stdio, :line))
@@ -9,6 +31,7 @@ defmodule Mix.Tasks.Compile.Flutter do
 
   def run(args) do
     _ = Mix.Project.get!()
+    flutter_config = Mix.Project.config()[:flutter]
 
     app_dir = Mix.Project.app_path()
     priv_dir = Path.join([app_dir, "priv"])
@@ -18,6 +41,12 @@ defmodule Mix.Tasks.Compile.Flutter do
 
     manifest_file = Path.join(priv_dir, "flutter.manifest")
     manifest = read_manifest(manifest_file)
+    cwd = File.cwd!()
+
+    if flutter_config[:cd] do
+      File.cd!(flutter_config[:cd])
+    end
+
     target_files = Path.wildcard("lib/**/*.dart")
     target_manifest = create_manifest(target_files)
 
@@ -34,7 +63,7 @@ defmodule Mix.Tasks.Compile.Flutter do
     end
 
     write_manifest(target_manifest, manifest_file)
-
+    File.cd!(cwd)
     {:ok, []}
   end
 
