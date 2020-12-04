@@ -69,7 +69,7 @@ defmodule FlutterEmbedder.MDNSClient do
       reuseaddr: true
     ]
 
-    case :gen_udp.open(@mdns_port, udp_options) do
+    case :gen_udp.open(0, udp_options) do
       {:ok, socket} ->
         {:noreply, %State{state | mdns_socket: socket}}
 
