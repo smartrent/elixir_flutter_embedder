@@ -26,7 +26,8 @@ defmodule FlutterEmbedder.MixProject do
   defp deps do
     [
       {:elixir_make, "~> 0.6.0", runtime: false},
-      {:jason, "~> 1.2"}
+      {:jason, "~> 1.2"},
+      {:mdns_lite, "~> 0.6"}
     ]
   end
 end

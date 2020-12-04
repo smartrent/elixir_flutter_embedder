@@ -104,3 +104,56 @@ mix firmware.burn
 ```
 
 And when it boots, you should see the default flutter application.
+
+### Dart Hot Code Reloading with Visual Studio Code
+
+One of the major selling points of Flutter is the ability to reload code instantly while developing.
+The Elixir Embedder supports this similarly to how [go-flutter](https://github.com/go-flutter-desktop/go-flutter) does it.
+
+In your `ui` project folder, create a file called `.vscode/launch.json` if it's not there already:
+
+```json
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Nerves Flutter Embedder",
+      "request": "attach",
+      "deviceId": "flutter-tester",
+      "observatoryUri": "${command:dart.promptForVmService}",
+      "type": "dart",
+      "program": "lib/main.dart" // Dart-Code v3.3.0 required
+    }
+  ]
+}
+```
+
+After that's available, from your `firmware` folder open a terminal and issue the command:
+
+```bash
+mix flutter.discover
+```
+
+It should return a result that looks something like:
+
+```shell
+Discovering devices via MDNS
+=============================================================
+
+  Found Flutter Observatory: 192.168.1.127
+      tunnel:      ssh -L 46603:localhost:46603 192.168.1.127
+      url:         http://localhost:46603/is1QgudddHQ=/
+
+      launch.json: {"deviceId":"flutter-tester","name":"Nerves Flutter (192.168.1.127)","observatoryUri":"http://localhost:46603/is1QgudddHQ=/\n","program":"lib/main.dart","request":"attach","type":"dart"}
+=============================================================
+```
+
+Now, copy the value in the `tunnel` section, execute it. This should open an SSH session to your
+device. Next copy the `url` section into your clipboard.
+
+Finally back in the `ui` editor, press `F5` and when it prompts you for a URL, paste the `url` from
+your clipboard. This will automatically connect to a debug session on the device. Every save you make to
+the Dart code will automatically sync over to the device.

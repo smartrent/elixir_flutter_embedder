@@ -1,4 +1,7 @@
 %{
+  "dns": {:hex, :dns, "2.2.0", "4721a79c2bccc25481930dffbfd06f40851321c3d679986af307111214bf124c", [:mix], [{:socket, "~> 0.3.13", [hex: :socket, repo: "hexpm", optional: false]}], "hexpm", "13ed1ef36ce896211ec6ce5e02709dbfb12aa61d6255bda8d531577a0a5a56e0"},
   "elixir_make": {:hex, :elixir_make, "0.6.0", "38349f3e29aff4864352084fc736fa7fa0f2995a819a737554f7ebd28b85aaab", [:mix], [], "hexpm", "d522695b93b7f0b4c0fcb2dfe73a6b905b1c301226a5a55cb42e5b14d509e050"},
   "jason": {:hex, :jason, "1.2.1", "12b22825e22f468c02eb3e4b9985f3d0cb8dc40b9bd704730efa11abd2708c44", [:mix], [{:decimal, "~> 1.0", [hex: :decimal, repo: "hexpm", optional: true]}], "hexpm", "b659b8571deedf60f79c5a608e15414085fa141344e2716fbd6988a084b5f993"},
+  "mdns_lite": {:hex, :mdns_lite, "0.6.6", "f87475c3bb9c1bd55c1e912bbf2401820648d01bc2d0b0c48374e0067143af4a", [:mix], [{:dns, "~> 2.1", [hex: :dns, repo: "hexpm", optional: false]}, {:vintage_net, "~> 0.7", [hex: :vintage_net, repo: "hexpm", optional: true]}], "hexpm", "c79e3259da3db9099213e0961efed5d72af3aa9c9563b27486da05dc99a0ac9a"},
+  "socket": {:hex, :socket, "0.3.13", "98a2ab20ce17f95fb512c5cadddba32b57273e0d2dba2d2e5f976c5969d0c632", [:mix], [], "hexpm", "f82ea9833ef49dde272e6568ab8aac657a636acb4cf44a7de8a935acb8957c2e"},
 }
