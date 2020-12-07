@@ -22,9 +22,6 @@
 #include <stdlib.h>
 #include <stdint.h>
 
-#define ERLCMD_WRITE_FD 4
-#define ERLCMD_READ_FD 3
-
 /*
  * Erlang request/response processing
  *
@@ -38,12 +35,14 @@ struct erlcmd {
 
     void (*request_handler)(const uint8_t *buffer, size_t length, void *cookie);
     void *cookie;
+    int read_fd;
+    int write_fd;
 };
 
-void erlcmd_init(struct erlcmd *handler,
+void erlcmd_init(struct erlcmd *handler, int read_fd, int write_fd,
                  void (*request_handler)(const uint8_t *req, size_t length, void *cookie),
                  void *cookie);
-void erlcmd_send(uint8_t *response, size_t len);
+void erlcmd_send(struct erlcmd *handler, uint8_t *response, size_t len);
 void erlcmd_process(struct erlcmd *handler);
 
 #endif

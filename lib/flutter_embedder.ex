@@ -2,7 +2,7 @@ defmodule FlutterEmbedder do
   @moduledoc File.read!("README.md")
   alias FlutterEmbedder.{PlatformChannelMessage, StandardMessageCodec, StandardMethodCall}
   import StandardMessageCodec, only: [is_valid_dart_value: 1]
-  defstruct [:port, :uri]
+  defstruct [:port, :uri, :module]
 
   require Logger
   use GenServer, child_spec: false
@@ -32,13 +32,13 @@ defmodule FlutterEmbedder do
             {:args, args},
             :binary,
             :exit_status,
-            # {:packet, 2},
+            {:packet, 4},
             # :nouse_stdio,
             {:env,
              [{'LD_LIBRARY_PATH', to_charlist(Application.app_dir(:flutter_embedder, ["priv"]))}]}
           ])
 
-        {:ok, %__MODULE__{port: port}}
+        {:ok, %__MODULE__{port: port, module: FlutterEmbedder.StubMethodCallHandler}}
     end
   end
 
@@ -56,40 +56,39 @@ defmodule FlutterEmbedder do
     {:stop, {:flutter_embedder_crash, status}, state}
   end
 
-  def handle_info(
-        {port, {:data, data = "flutter: Observatory listening on " <> uri}},
-        %{port: port} = state
-      ) do
-    Logger.info("#{data}")
-    uri = URI.parse(String.trim(uri))
-    state = %{state | uri: uri}
-    add_mdns_service(state)
-    {:noreply, state}
+  def handle_info({port, {:data, <<1, _::32, log::binary>>}}, %{port: port} = state) do
+    IO.inspect(log, label: "LOG")
+    # Logger.info(log)
+    case log do
+      "flutter: Observatory listening on " <> uri ->
+        uri = URI.parse(String.trim(uri))
+        state = %{state | uri: uri}
+        # add_mdns_service(state)
+        {:noreply, state}
+
+      _ ->
+        {:noreply, state}
+    end
   end
 
-  def handle_info({port, {:data, data}}, %{port: port} = state) do
-    Logger.info("#{data}")
-    {:noreply, state}
+  def handle_info({port, {:data, <<0, data::binary>>}}, %{port: port} = state) do
+    platform_channel_message = PlatformChannelMessage.decode(data)
+    Logger.info("#{inspect(platform_channel_message)}")
+
+    case StandardMethodCall.decode(platform_channel_message) do
+      {:ok, call} ->
+        handle_standard_call(platform_channel_message, call, state)
+
+      {:error, reason} ->
+        Logger.error("Could not decode data as StandardMethodCall: #{reason}")
+
+        reply_bin =
+          PlatformChannelMessage.encode_response(platform_channel_message, :not_implemented)
+
+        true = Port.command(state.port, reply_bin)
+        {:noreply, state}
+    end
   end
-
-  # def handle_info({port, {:data, data}}, %{port: port} = state) do
-  #   platform_channel_message = PlatformChannelMessage.decode(data)
-  #   Logger.info("#{inspect(platform_channel_message)}")
-
-  #   case StandardMethodCall.decode(platform_channel_message) do
-  #     {:ok, call} ->
-  #       handle_standard_call(platform_channel_message, call, state)
-
-  #     {:error, reason} ->
-  #       Logger.error("Could not decode data as StandardMethodCall: #{reason}")
-
-  #       reply_bin =
-  #         PlatformChannelMessage.encode_response(platform_channel_message, :not_implemented)
-
-  #       true = Port.command(state.port, reply_bin)
-  #       {:noreply, state}
-  #   end
-  # end
 
   def handle_standard_call(
         %PlatformChannelMessage{channel: channel} = call,

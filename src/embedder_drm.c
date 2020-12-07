@@ -182,11 +182,11 @@ static _Atomic bool  engine_running = false;
 // A 10-finger multi-touch display has 10 slots and each of them have their own position, tracking id, etc.
 // All mouses / touchpads share the same mouse pointer.
 struct mousepointer_mtslot {
-	// the MT tracking ID used to track this touch.
-	int     id;
-	int32_t flutter_slot_id;
-	double  x, y;
-	FlutterPointerPhase phase;
+    // the MT tracking ID used to track this touch.
+    int     id;
+    int32_t flutter_slot_id;
+    double  x, y;
+    FlutterPointerPhase phase;
 };
 
 static struct mousepointer_mtslot mousepointer;
@@ -267,7 +267,7 @@ static struct drm_fb *drm_fb_get_from_bo(struct gbm_bo *bo)
     }
 
     int ok = drmModeAddFB2WithModifiers(drm.fd, width, height, format, handles, strides, offsets, modifiers,
-                                    &fb->fb_id, flags);
+                                        &fb->fb_id, flags);
 
     if (ok) {
         if (flags)
@@ -490,7 +490,8 @@ static bool run_message_loop(void)
         while (tasklist->target_time > (currenttime = FlutterEngineGetCurrentTime())) {
             struct timespec abstargetspec;
             clock_gettime(CLOCK_REALTIME, &abstargetspec);
-            uint64_t abstarget = abstargetspec.tv_nsec + abstargetspec.tv_sec * 1000000000ull + (tasklist->target_time - currenttime);
+            uint64_t abstarget = abstargetspec.tv_nsec + abstargetspec.tv_sec * 1000000000ull +
+                                 (tasklist->target_time - currenttime);
             abstargetspec.tv_nsec = abstarget % 1000000000;
             abstargetspec.tv_sec =  abstarget / 1000000000;
 
@@ -1082,7 +1083,8 @@ static bool init_application(void)
     flutter.args.command_line_argc          = flutter.engine_argc;
     flutter.args.command_line_argv          = flutter.engine_argv;
     flutter.args.platform_message_callback  = NULL; // Not needed yet.
-    flutter.args.vsync_callback = vsync_callback; // See flutter-pi fix if display driver doesn't provide vblank timestamps
+    flutter.args.vsync_callback =
+        vsync_callback; // See flutter-pi fix if display driver doesn't provide vblank timestamps
     flutter.args.custom_task_runners        = &(FlutterCustomTaskRunners) {
         .struct_size = sizeof(FlutterCustomTaskRunners),
         .platform_task_runner = &(FlutterTaskRunnerDescription) {
@@ -1107,11 +1109,11 @@ static bool init_application(void)
 
     // update window size
     int ok = FlutterEngineSendWindowMetricsEvent(
-             engine,
+                 engine,
     &(FlutterWindowMetricsEvent) {
         .struct_size = sizeof(FlutterWindowMetricsEvent), .width = width, .height = height, .pixel_ratio = pixel_ratio
     }
-         ) == kSuccess;
+             ) == kSuccess;
 
     if (!ok) {
         debug("Could not update Flutter application size.");
@@ -1134,32 +1136,33 @@ static void destroy_application(void)
 static bool init_io(void)
 {
     FlutterPointerEvent flutterevents[16] = {0};
-	size_t i_flutterevent = 0;
-	int n_flutter_slots = 0;
+    size_t i_flutterevent = 0;
+    int n_flutter_slots = 0;
 
     // add the mouse slot
-	mousepointer = (struct mousepointer_mtslot) {
-		.id = 0,
-		.flutter_slot_id = n_flutter_slots++,
-		.x = 0, .y = 0,
-		.phase = kCancel
-	};
+    mousepointer = (struct mousepointer_mtslot) {
+        .id = 0,
+        .flutter_slot_id = n_flutter_slots++,
+        .x = 0, .y = 0,
+        .phase = kCancel
+    };
 
-	flutterevents[i_flutterevent++] = (FlutterPointerEvent) {
-		.struct_size = sizeof(FlutterPointerEvent),
-		.phase = kAdd,
-		.timestamp = (size_t) (FlutterEngineGetCurrentTime()*1000),
-		.x = 0,
-		.y = 0,
-		.signal_kind = kFlutterPointerSignalKindNone,
-		.device_kind = kFlutterPointerDeviceKindTouch,
-		.device = mousepointer.flutter_slot_id,
-		.buttons = 0
-	};
+    flutterevents[i_flutterevent++] = (FlutterPointerEvent) {
+        .struct_size = sizeof(FlutterPointerEvent),
+        .phase = kAdd,
+        .timestamp = (size_t) (FlutterEngineGetCurrentTime() * 1000),
+        .x = 0,
+        .y = 0,
+        .signal_kind = kFlutterPointerSignalKindNone,
+        .device_kind = kFlutterPointerDeviceKindTouch,
+        .device = mousepointer.flutter_slot_id,
+        .buttons = 0
+    };
     return FlutterEngineSendPointerEvent(engine, flutterevents, i_flutterevent) == kSuccess;
 }
 
-static void process_io_events(int fd) {
+static void process_io_events(int fd)
+{
     // Read as many the input events as possible
     ssize_t rd = read(fd, io_input_buffer, sizeof(io_input_buffer));
     if (rd < 0)
@@ -1168,7 +1171,7 @@ static void process_io_events(int fd) {
         error("read returned %d which is not a multiple of %d!", (int) rd, (int) sizeof(struct input_event));
 
     FlutterPointerEvent flutterevents[64] = {0};
-	size_t i_flutterevent = 0;
+    size_t i_flutterevent = 0;
 
     size_t event_count = rd / sizeof(struct input_event);
     for (size_t i = 0; i < event_count; i++) {
@@ -1179,12 +1182,12 @@ static void process_io_events(int fd) {
                 mousepointer.y = io_input_buffer[i].value;
             } else if (io_input_buffer[i].code == ABS_MT_TRACKING_ID && io_input_buffer[i].value == -1) {
             }
-            
-            if(mousepointer.phase == kDown) {
+
+            if (mousepointer.phase == kDown) {
                 flutterevents[i_flutterevent++] = (FlutterPointerEvent) {
                     .struct_size = sizeof(FlutterPointerEvent),
                     .phase = kMove,
-                    .timestamp = io_input_buffer[i].time.tv_sec*1000000 + io_input_buffer[i].time.tv_usec,
+                    .timestamp = io_input_buffer[i].time.tv_sec * 1000000 + io_input_buffer[i].time.tv_usec,
                     .x = mousepointer.x, .y = mousepointer.y,
                     .device = mousepointer.flutter_slot_id,
                     .signal_kind = kFlutterPointerSignalKindNone,
@@ -1193,27 +1196,27 @@ static void process_io_events(int fd) {
                 };
             }
 
-        } else if(io_input_buffer[i].type == EV_KEY) {
+        } else if (io_input_buffer[i].type == EV_KEY) {
             if (io_input_buffer[i].code == BTN_TOUCH) {
                 mousepointer.phase = io_input_buffer[i].value ? kDown : kUp;
             } else {
                 debug("unknown EV_KEY code=%d value=%d\r\n", io_input_buffer[i].code, io_input_buffer[i].value);
             }
-        } else if(io_input_buffer[i].type == EV_SYN && io_input_buffer[i].code == SYN_REPORT) {
+        } else if (io_input_buffer[i].type == EV_SYN && io_input_buffer[i].code == SYN_REPORT) {
             // we don't want to send an event to flutter if nothing changed.
             if (mousepointer.phase == kCancel) continue;
 
             flutterevents[i_flutterevent++] = (FlutterPointerEvent) {
                 .struct_size = sizeof(FlutterPointerEvent),
                 .phase = mousepointer.phase,
-                .timestamp = io_input_buffer[i].time.tv_sec*1000000 + io_input_buffer[i].time.tv_usec,
+                .timestamp = io_input_buffer[i].time.tv_sec * 1000000 + io_input_buffer[i].time.tv_usec,
                 .x = mousepointer.x, .y = mousepointer.y,
                 .device = mousepointer.flutter_slot_id,
                 .signal_kind = kFlutterPointerSignalKindNone,
                 .device_kind = kFlutterPointerDeviceKindTouch,
                 .buttons = 0
             };
-            if(mousepointer.phase == kUp)
+            if (mousepointer.phase == kUp)
                 mousepointer.phase = kCancel;
         } else {
             debug("unknown input_event type=%d\r\n", io_input_buffer[i].type);
@@ -1222,14 +1225,14 @@ static void process_io_events(int fd) {
 
     if (i_flutterevent == 0) return;
 
-	// now, send the data to the flutter engine
-	if (FlutterEngineSendPointerEvent(engine, flutterevents, i_flutterevent) != kSuccess) {
-		debug("could not send pointer events to flutter engine\r\n");
-	}
+    // now, send the data to the flutter engine
+    if (FlutterEngineSendPointerEvent(engine, flutterevents, i_flutterevent) != kSuccess) {
+        debug("could not send pointer events to flutter engine\r\n");
+    }
 }
 
- // cmd("/root/flutter_embedder /srv/erlang/lib/nerves_example-0.1.0/priv/flutter_assets /srv/erlang/lib/flutter_embedder-0.1.0/priv/icudtl.dat")
- // cmd("/srv/erlang/lib/flutter_embedder-0.1.0/priv/flutter_embedder /srv/erlang/lib/nerves_example-0.1.0/priv/flutter_assets /srv/erlang/lib/flutter_embedder-0.1.0/priv/icudtl.dat")
+// cmd("/root/flutter_embedder /srv/erlang/lib/nerves_example-0.1.0/priv/flutter_assets /srv/erlang/lib/flutter_embedder-0.1.0/priv/icudtl.dat")
+// cmd("/srv/erlang/lib/flutter_embedder-0.1.0/priv/flutter_embedder /srv/erlang/lib/nerves_example-0.1.0/priv/flutter_assets /srv/erlang/lib/flutter_embedder-0.1.0/priv/icudtl.dat")
 static void *io_loop(void *userdata)
 {
     const char *input_path = "/dev/input/event0";
@@ -1298,7 +1301,7 @@ int main(int argc, char **argv)
 
     argv[2] = argv[0];
     flutter.engine_argc = argc - 2;
-    flutter.engine_argv = (const char* const*) &(argv[2]);
+    flutter.engine_argv = (const char *const *) & (argv[2]);
 
     // check if asset bundle path is valid
     if (!init_paths()) {

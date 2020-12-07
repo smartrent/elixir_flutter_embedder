@@ -1,4 +1,4 @@
-
+#define _GNU_SOURCE
 #include <assert.h>
 #include <poll.h>
 #include <sys/eventfd.h>
@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <time.h>
 #include <errno.h>
 #include <pthread.h>
@@ -20,7 +21,7 @@
 #define DEBUG
 
 #ifdef DEBUG
-// #define LOG_PATH "log.txt"
+#define LOG_PATH "log.txt"
 #define log_location stderr
 #define debug(...) do { fprintf(log_location, __VA_ARGS__); fprintf(log_location, "\r\n"); fflush(log_location); } while(0)
 #define error(...) do { debug(__VA_ARGS__); } while (0)
@@ -35,10 +36,12 @@ static const size_t kInitialWindowWidth = 800;
 static const size_t kInitialWindowHeight = 600;
 FlutterEngine engine;
 
-#define NUM_POLLFD_ENTRIES 32
 static struct erlcmd handler;
-static struct pollfd fdset[NUM_POLLFD_ENTRIES];
-static int num_pollfds = 0;
+static struct pollfd fdset[3];
+static int num_pollfds = 3;
+static int capstdout[2];
+static char stdmethodcallbuffer[ERLCMD_BUF_SIZE];
+static char capstdoutbuffer[ERLCMD_BUF_SIZE];
 
 static_assert(FLUTTER_ENGINE_VERSION == 1,
               "This Flutter Embedder was authored against the stable Flutter "
@@ -127,7 +130,6 @@ static void on_platform_message(
     void *userdata
 )
 {
-
     pthread_mutex_lock(&lock);
     uint16_t channel_length = strlen(message->channel);
     if (head) {
@@ -169,7 +171,7 @@ static void on_platform_message(
     debug("Creating head node %lu", head->erlcmd_handle);
 
     pthread_mutex_unlock(&lock);
-    eventfd_write(fdset[1].fd, 1);
+    eventfd_write(fdset[2].fd, 1);
 }
 
 static bool runs_platform_tasks_on_current_thread(void *userdata)
@@ -251,27 +253,16 @@ bool RunFlutter(GLFWwindow *window,
     return true;
 }
 
-bool isCallerDown()
-{
-    struct pollfd ufd;
-    memset(&ufd, 0, sizeof ufd);
-    ufd.fd     = ERLCMD_READ_FD;
-    ufd.events = POLLIN;
-    if (poll(&ufd, 1, 0) < 0)
-        return true;
-    return ufd.revents & POLLHUP;
-}
-
 static void handle_from_elixir(const uint8_t *buffer, size_t length, void *cookie)
 {
     debug("handle_from_elixir: len=%lu, handle=%u", length, buffer[2]);
     erlcmd_platform_message_t *previous = head;
     erlcmd_platform_message_t *current = head;
     while (current) {
-        if (current->erlcmd_handle == buffer[2]) {
+        if (current->erlcmd_handle == buffer[sizeof(uint32_t)]) {
             debug("responding to %lu", current->erlcmd_handle);
             FlutterEngineSendPlatformMessageResponse(engine,
-                                                     (const FlutterPlatformMessageResponseHandle *)current->response_handle, &buffer[3], length - sizeof(uint8_t));
+                                                     (const FlutterPlatformMessageResponseHandle *)current->response_handle, &buffer[sizeof(uint32_t)+1], length - sizeof(uint8_t));
             previous->next = current->next;
             free(current);
             break;
@@ -292,15 +283,28 @@ void *myThreadFun(void *vargp)
             // Retry if EINTR
             if (errno == EINTR)
                 continue;
-
             error("poll failed with %d", errno);
-
         }
 
-        if (fdset[0].revents & (POLLIN | POLLHUP))
-            erlcmd_process(&handler);
+        // Erlang closed the port
+        if(fdset[0].revents & POLLHUP)
+            exit(2);
 
-        if (fdset[1].revents & (POLLIN | POLLHUP)) {
+        // from elixir
+        if (fdset[0].revents & POLLIN)
+            erlcmd_process(&handler);
+        
+        // Engine STDOUT
+        if (fdset[1].revents & POLLIN) {
+            memset(capstdoutbuffer, 0, ERLCMD_BUF_SIZE);
+            capstdoutbuffer[sizeof(uint32_t)] = 1;
+            size_t nbytes = read(fdset[1].fd, capstdoutbuffer+sizeof(uint32_t)+sizeof(uint32_t), ERLCMD_BUF_SIZE-sizeof(uint32_t)-sizeof(uint32_t));
+            if(nbytes < 0)
+                error("Failed to read engine log buffer");
+            erlcmd_send(&handler, capstdoutbuffer, nbytes);
+        }
+
+        if (fdset[2].revents & (POLLIN | POLLHUP)) {
             pthread_mutex_lock(&lock);
             eventfd_t event;
             eventfd_read(fdset[1].fd, &event);
@@ -308,30 +312,27 @@ void *myThreadFun(void *vargp)
             erlcmd_platform_message_t *current = head;
             while (current != NULL) {
                 if (!current->dispatched) {
-                    // debug("checking %lu", current->erlcmd_handle);
-                    size_t buffer_length = sizeof(uint16_t) + // erlcmd length packet
+                    debug("checking %lu %lu", current->erlcmd_handle, current->channel_length);
+                    size_t buffer_length = sizeof(uint32_t) + // erlcmd length packet
+                                           sizeof(uint8_t) + // opcode
                                            sizeof(uint8_t) + // handle
                                            sizeof(uint16_t) + // channel_length
                                            current->channel_length + // channel
                                            sizeof(uint16_t) + // message_length
                                            current->message_length;
                     uint8_t buffer[buffer_length];
-                    buffer[0] = 0;
-                    buffer[1] = 0; // erlcmd popultaes this.
-                    buffer[2] = current->erlcmd_handle;
-                    memcpy(&buffer[3], &current->channel_length, sizeof(uint16_t)); // 3&4 = channel_length
-                    memcpy(&buffer[5], current->channel, current->channel_length); // channel
-                    memcpy(&buffer[5 + current->channel_length], &current->message_length, sizeof(uint16_t));
-                    memcpy(&buffer[5 + current->channel_length + sizeof(uint16_t)], current->message, current->message_length);
-                    erlcmd_send(buffer, buffer_length);
+                    memset(buffer, 0, buffer_length);
+                    buffer[sizeof(uint32_t)] = 0x0;
+                    buffer[sizeof(uint32_t)+1] = current->erlcmd_handle;
+                    memcpy(&buffer[sizeof(uint32_t)+2], &current->channel_length, sizeof(uint16_t));
+                    memcpy(&buffer[sizeof(uint32_t)+4], current->channel, current->channel_length);
+                    memcpy(&buffer[sizeof(uint32_t)+4 + current->channel_length], &current->message_length, sizeof(uint16_t));
+                    memcpy(&buffer[sizeof(uint32_t)+4 + current->channel_length + sizeof(uint16_t)], current->message, current->message_length);
+                    erlcmd_send(&handler, buffer, buffer_length);
                     current->dispatched = true;
                 }
                 current = current->next;
             }
-
-            // debug("why won't this packet go thru??????");
-            // uint8_t buffer[4] = {0, 0, 'a', 'b'};
-            // erlcmd_send(buffer, 4);
             pthread_mutex_unlock(&lock);
         }
     }
@@ -352,19 +353,28 @@ int main(int argc, const char *argv[])
     const char *project_path = argv[1];
     const char *icudtl_path = argv[2];
 
-    erlcmd_init(&handler, handle_from_elixir, NULL);
+    int writefd = dup(STDOUT_FILENO);
+    int readfd = dup(STDIN_FILENO);
+    debug("using %d for erlcmd", writefd);
+    erlcmd_init(&handler, readfd, writefd, handle_from_elixir, NULL);
 
     // Initialize the file descriptor set for polling
     memset(fdset, -1, sizeof(fdset));
-    fdset[0].fd = ERLCMD_READ_FD;
+    fdset[0].fd = readfd;
     fdset[0].events = POLLIN;
     fdset[0].revents = 0;
 
-    fdset[1].fd = eventfd(0, 0);
+    if(pipe2(capstdout, O_NONBLOCK) <0)
+        error("Failed to create pipe");
+
+    dup2(capstdout[1], STDOUT_FILENO);
+    fdset[1].fd = capstdout[0];
     fdset[1].events = POLLIN;
     fdset[1].revents = 0;
 
-    num_pollfds = 2;
+    fdset[2].fd = eventfd(0, 0);
+    fdset[2].events = POLLIN;
+    fdset[2].revents = 0;
 
     int result = glfwInit();
     assert(result == GLFW_TRUE);
@@ -382,7 +392,6 @@ int main(int argc, const char *argv[])
     glfwSetKeyCallback(window, GLFWKeyCallback);
     glfwSetWindowSizeCallback(window, GLFWwindowSizeCallback);
     glfwSetMouseButtonCallback(window, GLFWmouseButtonCallback);
-    error("??????");
     if (pthread_mutex_init(&lock, NULL) != 0) {
         error("\n mutex init has failed\n");
         return 1;
@@ -391,7 +400,7 @@ int main(int argc, const char *argv[])
     pthread_t thread_id;
     pthread_create(&thread_id, NULL, myThreadFun, NULL);
 
-    while (!glfwWindowShouldClose(window) && !isCallerDown()) {
+    while (!glfwWindowShouldClose(window)) {
         glfwWaitEventsTimeout(0.1);
         // glfwWaitEvents();
     }
