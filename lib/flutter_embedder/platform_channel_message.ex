@@ -1,11 +1,11 @@
 defmodule FlutterEmbedder.PlatformChannelMessage do
-  defstruct [:handle, :channel, :message]
+  defstruct [:cookie, :channel, :message]
 
-  @type handle :: 0..255
+  @type cookie :: 0..255
   @type channel :: String.t()
   @type message :: binary()
   @type t() :: %__MODULE__{
-          handle: handle(),
+          cookie: cookie(),
           channel: channel(),
           message: message()
         }
@@ -16,11 +16,11 @@ defmodule FlutterEmbedder.PlatformChannelMessage do
 
   @spec decode(binary()) :: t()
   def decode(
-        <<handle::8, channel_length::little-16, channel::binary-size(channel_length),
-          message_length::little-16, message::binary-size(message_length)>>
+        <<cookie::8, channel_length::little-16, channel::binary-size(channel_length),
+          message_length::little-16, message::binary-size(message_length)>> = data
       ) do
     %__MODULE__{
-      handle: handle,
+      cookie: cookie,
       channel: channel,
       message: message
     }
@@ -28,15 +28,15 @@ defmodule FlutterEmbedder.PlatformChannelMessage do
 
   @spec encode_response(t(), ok_response() | error_response() | not_implemented_response()) ::
           binary()
-  def encode_response(%__MODULE__{handle: handle}, {:ok, value}) when is_binary(value) do
-    <<handle::8, 0, value::binary>>
+  def encode_response(%__MODULE__{cookie: cookie}, {:ok, value}) when is_binary(value) do
+    <<cookie::8, 0, value::binary>>
   end
 
-  def encode_response(%__MODULE__{handle: handle}, {:error, value}) when is_binary(value) do
-    <<handle::8, 1, value::binary>>
+  def encode_response(%__MODULE__{cookie: cookie}, {:error, value}) when is_binary(value) do
+    <<cookie::8, 1, value::binary>>
   end
 
-  def encode_response(%__MODULE__{handle: handle}, :not_implemented) do
-    <<handle::8>>
+  def encode_response(%__MODULE__{cookie: cookie}, :not_implemented) do
+    <<cookie::8>>
   end
 end

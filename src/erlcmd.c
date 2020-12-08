@@ -26,6 +26,42 @@
 
 #include <arpa/inet.h>
 
+
+#include <stdio.h>
+#define LOG_PATH "log.txt"
+#define log_location stderr
+#define debug(...) do { fprintf(log_location, __VA_ARGS__); fprintf(log_location, "\r\n"); fflush(log_location); } while(0)
+#define debug_(...) do { fprintf(log_location, __VA_ARGS__); } while(0)
+#define error(...) do { debug(__VA_ARGS__); } while (0)
+void __DumpHex(const void* data, size_t size) {
+	char ascii[17];
+	size_t i, j;
+	ascii[16] = '\0';
+	for (i = 0; i < size; ++i) {
+		debug_("%02X ", ((unsigned char*)data)[i]);
+		if (((unsigned char*)data)[i] >= ' ' && ((unsigned char*)data)[i] <= '~') {
+			ascii[i % 16] = ((unsigned char*)data)[i];
+		} else {
+			ascii[i % 16] = '.';
+		}
+		if ((i+1) % 8 == 0 || i+1 == size) {
+			debug_(" ");
+			if ((i+1) % 16 == 0) {
+				debug_("|  %s \n", ascii);
+			} else if (i+1 == size) {
+				ascii[(i+1) % 16] = '\0';
+				if ((i+1) % 16 <= 8) {
+					debug_(" ");
+				}
+				for (j = (i+1) % 16; j < 16; ++j) {
+					debug_("   ");
+				}
+				debug_("|  %s \n", ascii);
+			}
+		}
+	}
+}
+
 /**
  * Initialize an Erlang command handler.
  *
@@ -94,6 +130,11 @@ static size_t erlcmd_try_dispatch(struct erlcmd *handler)
     if (msglen + sizeof(uint32_t) > handler->index)
         return 0;
 
+    if(msglen > 1) {
+        debug("================== ERLCMD ==================");
+        __DumpHex(handler->buffer+sizeof(uint32_t), msglen);
+        debug("==================        ==================\r\n");
+    }
     handler->request_handler(handler->buffer, msglen, handler->cookie);
 
     return msglen + sizeof(uint32_t);

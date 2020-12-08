@@ -44,10 +44,6 @@ defmodule FlutterEmbedder do
 
   @impl true
   def terminate(_, state) do
-    if state.port do
-      Port.close(state.port)
-    end
-
     remove_mdns_service(state)
   end
 
@@ -57,8 +53,8 @@ defmodule FlutterEmbedder do
   end
 
   def handle_info({port, {:data, <<1, _::32, log::binary>>}}, %{port: port} = state) do
-    IO.inspect(log, label: "LOG")
-    # Logger.info(log)
+    Logger.info(log)
+
     case log do
       "flutter: Observatory listening on " <> uri ->
         uri = URI.parse(String.trim(uri))
@@ -73,14 +69,18 @@ defmodule FlutterEmbedder do
 
   def handle_info({port, {:data, <<0, data::binary>>}}, %{port: port} = state) do
     platform_channel_message = PlatformChannelMessage.decode(data)
-    Logger.info("#{inspect(platform_channel_message)}")
+    # Logger.info("#{inspect(platform_channel_message)}")
 
     case StandardMethodCall.decode(platform_channel_message) do
       {:ok, call} ->
         handle_standard_call(platform_channel_message, call, state)
 
       {:error, reason} ->
-        Logger.error("Could not decode data as StandardMethodCall: #{reason}")
+        Logger.error(
+          "Could not decode #{platform_channel_message.channel} message as StandardMethodCall: #{
+            reason
+          } (this is probably ok)"
+        )
 
         reply_bin =
           PlatformChannelMessage.encode_response(platform_channel_message, :not_implemented)
@@ -95,10 +95,12 @@ defmodule FlutterEmbedder do
         %StandardMethodCall{method: method, args: args},
         state
       ) do
-    case state.module.handle_std_call(channel, method, args) do
+    case state.module.handle_std_call(channel, method, args) |> IO.inspect(label: "reply") do
       {:ok, value} when is_valid_dart_value(value) ->
         value_ = StandardMessageCodec.encode_value(value)
+
         reply_bin = PlatformChannelMessage.encode_response(call, {:ok, value_})
+
         true = Port.command(state.port, reply_bin)
 
       {:error, code, message, value} ->

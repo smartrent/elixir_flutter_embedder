@@ -81,7 +81,6 @@ defmodule FlutterEmbedder.MDNSClient do
   def handle_info({:udp, socket, ip, _port, packet}, %{mdns_socket: socket} = state) do
     record = DNS.Record.decode(packet)
     state = handle_mdns(record.anlist, ip, state)
-    # IO.inspect(record.anlist, label: "???")
     {:noreply, state}
   end
 
@@ -123,7 +122,6 @@ defmodule FlutterEmbedder.MDNSClient do
   end
 
   defp handle_mdns([_unknown | rest], ip, state) do
-    # IO.inspect(unknown, label: "mdns packet from: #{inspect(ip)}")
     handle_mdns(rest, ip, state)
   end
 
