@@ -150,8 +150,7 @@ size_t plat_msg_dispatch(plat_msg_container_t *container, struct erlcmd *handler
     return 0;
 }
 
-void plat_msg_queue_destroy(plat_msg_queue_t *queue)
+size_t plat_msg_queue_destroy(plat_msg_queue_t *queue)
 {
-    pthread_mutex_destroy(&queue->lock);
-    return;
+    return pthread_mutex_destroy(&queue->lock);
 }

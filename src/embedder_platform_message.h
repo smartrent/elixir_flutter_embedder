@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "flutter_embedder.h"
+#include "erlcmd.h"
 
 typedef struct platform_message
 {
@@ -30,8 +31,8 @@ typedef struct platform_message_queue
 size_t plat_msg_queue_init(plat_msg_queue_t*);
 plat_msg_container_t* plat_msg_push(plat_msg_queue_t*, const FlutterPlatformMessage*);
 void plat_msg_process(plat_msg_queue_t*, FlutterEngine, const uint8_t*, size_t);
-size_t plat_msg_dispatch_all(plat_msg_queue_t*, struct erlcmd* handler);
+size_t plat_msg_dispatch_all(plat_msg_queue_t*, struct erlcmd*);
 size_t plat_msg_dispatch(plat_msg_container_t*, struct erlcmd*);
-void plat_msg_queue_destroy(plat_msg_queue_t*);
+size_t  plat_msg_queue_destroy(plat_msg_queue_t*);
 
 #endif
