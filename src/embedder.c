@@ -30,7 +30,6 @@ static struct erlcmd handler;
 static struct pollfd fdset[3];
 static int num_pollfds = 3;
 static int capstdout[2];
-static char stdmethodcallbuffer[ERLCMD_BUF_SIZE];
 static char capstdoutbuffer[ERLCMD_BUF_SIZE];
 static pthread_t flutter_embedder_pollfd_thread;
 
@@ -140,7 +139,6 @@ int main(int argc, const char *argv[])
 #ifdef LOG_PATH
     log_location = fopen(LOG_PATH, "w");
 #endif
-    // sleep(5);
 #endif
     if (argc != 3) {
         error("Invalid Arguments");

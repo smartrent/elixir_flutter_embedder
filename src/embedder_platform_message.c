@@ -85,9 +85,10 @@ void plat_msg_process(plat_msg_queue_t *queue,
             (*current)->channel = NULL;
             free(*current);
             *current = next;
-            break;
+            goto cleanup;
         }
     }
+    goto cleanup;
 cleanup:
     pthread_mutex_unlock(&queue->lock);
     return;

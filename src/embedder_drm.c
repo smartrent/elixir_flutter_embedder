@@ -41,18 +41,7 @@
 #include <string.h>
 
 #include "flutter_embedder.h"
-
-#define DEBUG
-
-#ifdef DEBUG
-// #define LOG_PATH "/tmp/log.txt"
-#define log_location stderr
-#define debug(...) do { fprintf(log_location, __VA_ARGS__); fprintf(log_location, "\r\n"); fflush(log_location); } while(0)
-#define error(...) do { debug(__VA_ARGS__); } while (0)
-#else
-#define debug(...)
-#define error(...) do { fprintf(stderr, __VA_ARGS__); fprintf(stderr, ""); } while(0)
-#endif
+#include "debug.h"
 
 #define EGL_PLATFORM_GBM_KHR    0x31D7
 
@@ -71,12 +60,6 @@ struct engine_task {
             uint64_t vblank_ns;
             intptr_t baton;
         };
-        struct {
-            char *channel;
-            const FlutterPlatformMessageResponseHandle *responsehandle;
-            size_t message_size;
-            uint8_t *message;
-        };
     };
     uint64_t target_time;
 };
@@ -91,7 +74,6 @@ struct pageflip_data {
     intptr_t next_baton;
 };
 
-static void post_platform_task(struct engine_task *task);
 
 /// width & height of the display in pixels
 static uint32_t width, height;
@@ -159,25 +141,6 @@ static struct {
     const char *const *engine_argv;
 } flutter = {0};
 
-// Flutter VSync handles
-// stored as a ring buffer. i_batons is the offset of the first baton (0 - 63)
-// scheduled_frames - 1 is the number of total number of stored batons.
-// (If 5 vsync events were asked for by the flutter engine, you only need to store 4 batons.
-//  The baton for the first one that was asked for would've been returned immediately.)
-static intptr_t batons[64];
-static uint8_t i_batons = 0;
-static int scheduled_frames = 0;
-static pthread_t platform_thread_id;
-
-static struct engine_task *tasklist = NULL;
-static pthread_mutex_t tasklist_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t  task_added = PTHREAD_COND_INITIALIZER;
-
-static FlutterEngine engine;
-static _Atomic bool  engine_running = false;
-
-// IO stuff
-
 // position & pointer phase of a mouse pointer / multitouch slot
 // A 10-finger multi-touch display has 10 slots and each of them have their own position, tracking id, etc.
 // All mouses / touchpads share the same mouse pointer.
@@ -193,6 +156,25 @@ static struct mousepointer_mtslot mousepointer;
 static pthread_t io_thread_id;
 #define MAX_EVENTS_PER_READ 64
 static struct input_event io_input_buffer[MAX_EVENTS_PER_READ];
+
+// Flutter VSync handles
+// stored as a ring buffer. i_batons is the offset of the first baton (0 - 63)
+// scheduled_frames - 1 is the number of total number of stored batons.
+// (If 5 vsync events were asked for by the flutter engine, you only need to store 4 batons.
+//  The baton for the first one that was asked for would've been returned immediately.)
+static intptr_t batons[64];
+static uint8_t i_batons = 0;
+static int scheduled_frames = 0;
+static pthread_t platform_thread_id;
+
+static struct engine_task *tasklist = NULL;
+static pthread_mutex_t tasklist_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  task_added = PTHREAD_COND_INITIALIZER;
+
+extern FlutterEngine engine;
+static _Atomic bool  engine_running = false;
+
+static void post_platform_task(struct engine_task *task);
 
 static bool make_current(void *userdata)
 {
@@ -470,10 +452,10 @@ static void vsync_callback(void *userdata, intptr_t baton)
 /************************
  * PLATFORM TASK-RUNNER *
  ************************/
-static bool init_message_loop()
+static size_t init_message_loop()
 {
     platform_thread_id = pthread_self();
-    return true;
+    return 0;
 }
 
 static bool run_message_loop(void)
@@ -572,33 +554,7 @@ static bool runs_platform_tasks_on_current_thread(void *userdata)
     return pthread_equal(pthread_self(), platform_thread_id) != 0;
 }
 
-static bool path_exists(const char *path)
-{
-    return access(path, R_OK) == 0;
-}
-
-static bool init_paths(void)
-{
-    if (!path_exists(flutter.asset_bundle_path)) {
-        debug("Asset Bundle Directory \"%s\" does not exist\n", flutter.asset_bundle_path);
-        return false;
-    }
-
-    snprintf(flutter.kernel_blob_path, sizeof(flutter.kernel_blob_path), "%s/kernel_blob.bin",
-             flutter.asset_bundle_path);
-    if (!path_exists(flutter.kernel_blob_path)) {
-        debug("Kernel blob does not exist inside Asset Bundle Directory.");
-        return false;
-    }
-
-    if (!path_exists(flutter.icu_data_path)) {
-        debug("ICU Data file not find at %s.\n", flutter.icu_data_path);
-        return false;
-    }
-    return true;
-}
-
-static bool init_display(void)
+static size_t init_display(void)
 {
     /**********************
      * DRM INITIALIZATION *
@@ -688,7 +644,7 @@ static bool init_display(void)
 
         if (!drm.has_device) {
             debug("couldn't find a usable DRM device");
-            return false;
+            return -1;
         }
     }
 
@@ -697,7 +653,7 @@ static bool init_display(void)
         drm.fd = open(drm.device, O_RDWR);
         if (drm.fd < 0) {
             debug("Could not open DRM device");
-            return false;
+            return -1;
         }
     }
 
@@ -710,7 +666,7 @@ static bool init_display(void)
             else
                 debug("drmModeGetResources failed: %s\n", strerror(errno));
 
-            return false;
+            return -1;
         }
     }
 
@@ -758,7 +714,7 @@ static bool init_display(void)
     }
     if (!connector) {
         debug("could not find a connected connector!");
-        return false;
+        return -1;
     }
 
     debug("Choosing DRM mode from %d available modes...\n", connector->count_modes);
@@ -800,7 +756,7 @@ static bool init_display(void)
 
     if (!drm.mode) {
         debug("could not find a suitable DRM mode!");
-        return false;
+        return -1;
     }
 
     // calculate the pixel ratio
@@ -829,7 +785,7 @@ static bool init_display(void)
         drm.crtc_id = encoder->crtc_id;
     } else {
         debug("could not find a suitable crtc!");
-        return false;
+        return -1;
     }
 
     for (int i = 0; i < resources->count_crtcs; i++) {
@@ -857,7 +813,7 @@ static bool init_display(void)
     if (!gbm.surface) {
         if (gbm.modifier != DRM_FORMAT_MOD_LINEAR) {
             debug("GBM Surface creation modifiers requested but not supported by GBM");
-            return false;
+            return -1;
         }
         gbm.surface = gbm_surface_create(gbm.device, width, height, gbm.format,
                                          GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
@@ -865,7 +821,7 @@ static bool init_display(void)
 
     if (!gbm.surface) {
         debug("failed to create GBM surface");
-        return false;
+        return -1;
     }
 
     /**********************
@@ -902,13 +858,13 @@ static bool init_display(void)
 
     if (!egl.display) {
         debug("Couldn't get EGL display");
-        return false;
+        return -1;
     }
 
     debug("Initializing EGL...");
     if (!eglInitialize(egl.display, &major, &minor)) {
         debug("failed to initialize EGL");
-        return false;
+        return -1;
     }
 
     debug("Querying EGL display extensions...");
@@ -927,7 +883,7 @@ static bool init_display(void)
     debug("Binding OpenGL ES API...");
     if (!eglBindAPI(EGL_OPENGL_ES_API)) {
         debug("failed to bind OpenGL ES API");
-        return false;
+        return -1;
     }
 
 
@@ -938,17 +894,17 @@ static bool init_display(void)
 
     if (!eglGetConfigs(egl.display, NULL, 0, &count) || count < 1) {
         debug("No EGL configs to choose from.");
-        return false;
+        return -1;
     }
 
     configs = malloc(count * sizeof(EGLConfig));
-    if (!configs) return false;
+    if (!configs) return -1;
 
     debug("Finding EGL configs with appropriate attributes...");
     if (!eglChooseConfig(egl.display, config_attribs, configs, count, &matched) || !matched) {
         debug("No EGL configs with appropriate attributes.");
         free(configs);
-        return false;
+        return -1;
     }
     debug("eglChooseConfig done");
 
@@ -975,26 +931,26 @@ static bool init_display(void)
 
     if (!_found_matching_config) {
         debug("Could not find context with appropriate attributes and matching native visual ID.");
-        return false;
+        return -1;
     }
 
     debug("Creating EGL context...");
     egl.context = eglCreateContext(egl.display, egl.config, EGL_NO_CONTEXT, context_attribs);
     if (egl.context == NULL) {
         debug("failed to create EGL context");
-        return false;
+        return -1;
     }
 
     debug("Creating EGL window surface...");
     egl.surface = eglCreateWindowSurface(egl.display, egl.config, (EGLNativeWindowType) gbm.surface, NULL);
     if (egl.surface == EGL_NO_SURFACE) {
         debug("failed to create EGL window surface");
-        return false;
+        return -1;
     }
 
     if (!eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context)) {
         debug("Could not make EGL context current to get OpenGL information");
-        return false;
+        return -1;
     }
 
     egl.renderer = (char *) glGetString(GL_RENDERER);
@@ -1030,33 +986,28 @@ static bool init_display(void)
     struct drm_fb *fb = drm_fb_get_from_bo(drm.previous_bo);
     if (!fb) {
         debug("failed to get a new framebuffer BO");
-        return false;
+        return -1;
     }
 
     debug("Setting CRTC...");
     ok = drmModeSetCrtc(drm.fd, drm.crtc_id, fb->fb_id, 0, 0, &drm.connector_id, 1, drm.mode);
     if (ok) {
         debug("failed to set mode: %s\n", strerror(errno));
-        return false;
+        return -1;
     }
 
     debug("Clearing current context...");
     if (!eglMakeCurrent(egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)) {
         debug("Could not clear EGL context");
-        return false;
+        return -1;
     }
 
     debug("finished display setup!");
 
-    return true;
+    return 0;
 }
 
-static void destroy_display(void)
-{
-    debug("destroy_display not yet implemented");
-}
-
-static bool init_application(void)
+static size_t run_flutter(FlutterProjectArgs *args)
 {
     // configure flutter rendering
     flutter.renderer_config.type = kOpenGL;
@@ -1069,22 +1020,7 @@ static bool init_application(void)
     flutter.renderer_config.open_gl.surface_transformation = NULL;
 
     // configure flutter
-    flutter.args.struct_size                = sizeof(FlutterProjectArgs);
-    flutter.args.assets_path                = flutter.asset_bundle_path;
-    flutter.args.icu_data_path              = flutter.icu_data_path;
-    flutter.args.isolate_snapshot_data_size = 0;
-    flutter.args.isolate_snapshot_data      = NULL;
-    flutter.args.isolate_snapshot_instructions_size = 0;
-    flutter.args.isolate_snapshot_instructions   = NULL;
-    flutter.args.vm_snapshot_data_size      = 0;
-    flutter.args.vm_snapshot_data           = NULL;
-    flutter.args.vm_snapshot_instructions_size = 0;
-    flutter.args.vm_snapshot_instructions   = NULL;
-    flutter.args.command_line_argc          = flutter.engine_argc;
-    flutter.args.command_line_argv          = flutter.engine_argv;
-    flutter.args.platform_message_callback  = NULL; // Not needed yet.
-    flutter.args.vsync_callback =
-        vsync_callback; // See flutter-pi fix if display driver doesn't provide vblank timestamps
+    args->vsync_callback = vsync_callback; // See flutter-pi fix if display driver doesn't provide vblank timestamps
     flutter.args.custom_task_runners        = &(FlutterCustomTaskRunners) {
         .struct_size = sizeof(FlutterCustomTaskRunners),
         .platform_task_runner = &(FlutterTaskRunnerDescription) {
@@ -1096,13 +1032,10 @@ static bool init_application(void)
     };
 
     // spin up the engine
-    FlutterEngineResult _result = FlutterEngineRun(FLUTTER_ENGINE_VERSION, &flutter.renderer_config,
-                                                   &flutter.args, NULL, &engine);
+    FlutterEngineResult _result = FlutterEngineRun(FLUTTER_ENGINE_VERSION, &flutter.renderer_config, args, NULL, &engine);
     if (_result != kSuccess) {
         debug("Could not run the flutter engine");
-        return false;
-    } else {
-        debug("flutter engine successfully started up.");
+        return -1;
     }
 
     engine_running = true;
@@ -1113,27 +1046,16 @@ static bool init_application(void)
     &(FlutterWindowMetricsEvent) {
         .struct_size = sizeof(FlutterWindowMetricsEvent), .width = width, .height = height, .pixel_ratio = pixel_ratio
     }
-             ) == kSuccess;
+             );
 
-    if (!ok) {
+    if (ok != kSuccess) {
         debug("Could not update Flutter application size.");
-        return false;
+        return -1;
     }
-
-    return true;
+    return 0;
 }
 
-static void destroy_application(void)
-{
-    if (engine != NULL) {
-        if (FlutterEngineShutdown(engine) != kSuccess)
-            debug("Could not shutdown the flutter engine.");
-
-        engine = NULL;
-    }
-}
-
-static bool init_io(void)
+static size_t init_io(void)
 {
     FlutterPointerEvent flutterevents[16] = {0};
     size_t i_flutterevent = 0;
@@ -1158,7 +1080,10 @@ static bool init_io(void)
         .device = mousepointer.flutter_slot_id,
         .buttons = 0
     };
-    return FlutterEngineSendPointerEvent(engine, flutterevents, i_flutterevent) == kSuccess;
+    if(FlutterEngineSendPointerEvent(engine, flutterevents, i_flutterevent) != kSuccess) {
+        return -1;
+    }
+    return 0;
 }
 
 static void process_io_events(int fd)
@@ -1231,8 +1156,6 @@ static void process_io_events(int fd)
     }
 }
 
-// cmd("/root/flutter_embedder /srv/erlang/lib/nerves_example-0.1.0/priv/flutter_assets /srv/erlang/lib/flutter_embedder-0.1.0/priv/icudtl.dat")
-// cmd("/srv/erlang/lib/flutter_embedder-0.1.0/priv/flutter_embedder /srv/erlang/lib/nerves_example-0.1.0/priv/flutter_assets /srv/erlang/lib/flutter_embedder-0.1.0/priv/icudtl.dat")
 static void *io_loop(void *userdata)
 {
     const char *input_path = "/dev/input/event0";
@@ -1240,17 +1163,17 @@ static void *io_loop(void *userdata)
     if (errno == EACCES && getuid() != 0)
         error("You do not have access to %s.", input_path);
 
+    struct pollfd fdset[2];
+    memset(fdset, -1, sizeof(fdset));
+
+    fdset[0].fd = fd;
+    fdset[0].events = (POLLIN | POLLPRI | POLLHUP);
+    fdset[0].revents = 0;
+
+    fdset[1].fd = drm.fd;
+    fdset[1].events = (POLLIN | POLLPRI | POLLHUP);
+    fdset[1].revents = 0;
     while (engine_running) {
-        // debug("io poll");
-        struct pollfd fdset[2];
-
-        fdset[0].fd = fd;
-        fdset[0].events = (POLLIN | POLLPRI | POLLHUP);
-        fdset[0].revents = 0;
-
-        fdset[1].fd = drm.fd;
-        fdset[1].events = (POLLIN | POLLPRI | POLLHUP);
-        fdset[1].revents = 0;
 
         int rc = poll(fdset, 2, -1);
         if (rc < 0)
@@ -1265,7 +1188,7 @@ static void *io_loop(void *userdata)
     return NULL;
 }
 
-static bool run_io_thread(void)
+static size_t run_io_thread()
 {
     int ok = pthread_create(&io_thread_id, NULL, &io_loop, NULL);
     if (ok != 0) {
@@ -1279,71 +1202,54 @@ static bool run_io_thread(void)
         return false;
     }
 
-    return true;
+    return 0;
 }
 
-int main(int argc, char **argv)
+size_t gfx_init(FlutterProjectArgs* args)
 {
 
-#ifdef DEBUG
-#ifdef LOG_PATH
-    log_location = fopen(LOG_PATH, "w");
-#endif
-#endif
-
-    if (argc < 3) {
-        error("flutter_embedder <asset bundle path> <icu path> [other args]");
-        exit(EXIT_FAILURE);
-    }
-
-    snprintf(flutter.asset_bundle_path, sizeof(flutter.asset_bundle_path), "%s", argv[1]);
-    snprintf(flutter.icu_data_path, sizeof(flutter.icu_data_path), "%s", argv[2]);
-
-    argv[2] = argv[0];
-    flutter.engine_argc = argc - 2;
-    flutter.engine_argv = (const char *const *) & (argv[2]);
-
-    // check if asset bundle path is valid
-    if (!init_paths()) {
-        error("init_paths");
-        return EXIT_FAILURE;
-    }
-
-    if (!init_message_loop()) {
+    debug("initializing init_message_loop...");
+    if (init_message_loop() < 0) {
         error("init_message_loop");
         return EXIT_FAILURE;
     }
 
     // initialize display
     debug("initializing display...");
-    if (!init_display()) {
+    if (init_display() < 0) {
+        error("init_display");
         return EXIT_FAILURE;
     }
 
-    // initialize application
-    debug("Initializing Application...");
-    if (!init_application()) {
-        debug("init_application failed");
+    debug("initializing flutter...");
+    if(run_flutter(args) < 0) {
+        error("run_flutter");
         return EXIT_FAILURE;
     }
 
     debug("Initializing Input devices...");
-    if (!init_io()) {
-        debug("init_io failed");
+    if (init_io() < 0) {
+        error("init_io");
         return EXIT_FAILURE;
     }
 
     // read input events
     debug("Running IO thread...");
-    run_io_thread();
+    if(run_io_thread() < 0) {
+        error("run_io_thread");
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
 
+void gfx_loop()
+{
     // run message loop
     debug("Running message loop...");
     run_message_loop();
+}
 
-    // exit
-    destroy_application();
-    destroy_display();
-
-    return EXIT_SUCCESS;
+void gfx_terminate(void)
+{
+    debug("gfx_terminate not yet implemented");
 }

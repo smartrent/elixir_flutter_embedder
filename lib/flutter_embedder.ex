@@ -1,5 +1,5 @@
 defmodule FlutterEmbedder do
-  @moduledoc File.read!("README.md")
+  # @moduledoc File.read!("README.md")
   alias FlutterEmbedder.{PlatformChannelMessage, StandardMessageCodec, StandardMethodCall}
   import StandardMessageCodec, only: [is_valid_dart_value: 1]
   defstruct [:port, :uri, :module]
@@ -37,6 +37,7 @@ defmodule FlutterEmbedder do
             {:env,
              [{'LD_LIBRARY_PATH', to_charlist(Application.app_dir(:flutter_embedder, ["priv"]))}]}
           ])
+        Logger.info "#{inspect(Port.info(port))}"
 
         {:ok, %__MODULE__{port: port, module: FlutterEmbedder.StubMethodCallHandler}}
     end

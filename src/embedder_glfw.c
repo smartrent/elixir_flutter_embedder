@@ -114,7 +114,7 @@ static uint32_t fbo_callback(void *userdata)
     return 0;
 }
 
-bool RunFlutter(GLFWwindow *window, FlutterProjectArgs *args)
+static size_t run_flutter(GLFWwindow *window, FlutterProjectArgs *args)
 {
     FlutterRendererConfig config = {};
     config.type = kOpenGL;
@@ -142,8 +142,7 @@ bool RunFlutter(GLFWwindow *window, FlutterProjectArgs *args)
 
     glfwSetWindowUserPointer(window, engine);
     GLFWwindowSizeCallback(window, kInitialWindowWidth, kInitialWindowHeight);
-
-    return true;
+    return 0;
 }
 
 /**
@@ -165,7 +164,7 @@ size_t gfx_init(FlutterProjectArgs *args)
     glfwGetFramebufferSize(window, &framebuffer_width, &framebuffer_height);
     g_pixelRatio = framebuffer_width / kInitialWindowWidth;
 
-    result = RunFlutter(window, args);
+    result = run_flutter(window, args);
     if (result < 0)
         return result;
 

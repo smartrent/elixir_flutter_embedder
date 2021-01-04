@@ -5,7 +5,8 @@
 #include "flutter_embedder.h"
 
 /**
- * Initialize whatever graphics backend is configured
+ * Initialize whatever graphics backend is configured.
+ * This is where `FlutterEngineRun()` should be called.
  * 
  * @param args partially complete (and already allocated) structure to pass to the engine
  * @return integer where 0 is ok, anything else is an error
