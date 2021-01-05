@@ -41,6 +41,7 @@
 #include <string.h>
 
 #include "flutter_embedder.h"
+#define EGL_PLATFORM_GBM_KHR    0x31D7
 
 #define DEBUG
 
@@ -54,11 +55,7 @@
 #define error(...) do { fprintf(stderr, __VA_ARGS__); fprintf(stderr, ""); } while(0)
 #endif
 
-#define EGL_PLATFORM_GBM_KHR    0x31D7
-
 typedef enum {
-    kVBlankRequest,
-    kVBlankReply,
     kFlutterTask
 } engine_task_type;
 
@@ -93,25 +90,13 @@ struct pageflip_data {
 
 static void post_platform_task(struct engine_task *task);
 
-/// width & height of the display in pixels
-static uint32_t width, height;
-
-/// physical width & height of the display in millimeters
-/// the physical size can only be queried for HDMI displays (and even then, most displays will
-///   probably return bogus values like 160mm x 90mm).
-/// for DSI displays, the physical size of the official 7-inch display will be set in init_display.
-/// init_display will only update width_mm and height_mm if they are set to zero, allowing you
-///   to hardcode values for you individual display.
-static uint32_t width_mm = 0, height_mm = 0;
-static uint32_t refresh_rate = 60;
-static uint32_t refresh_period_ns = 16666666;
 
 /// The pixel ratio used by flutter.
 /// This is computed inside init_display using width_mm and height_mm.
 /// flutter only accepts pixel ratios >= 1.0
 /// init_display will only update this value if it is equal to zero,
 ///   allowing you to hardcode values.
-static double pixel_ratio = 0.0;
+static double pixel_ratio = 1.358234;
 
 static struct {
     char device[PATH_MAX];
@@ -159,14 +144,6 @@ static struct {
     const char *const *engine_argv;
 } flutter = {0};
 
-// Flutter VSync handles
-// stored as a ring buffer. i_batons is the offset of the first baton (0 - 63)
-// scheduled_frames - 1 is the number of total number of stored batons.
-// (If 5 vsync events were asked for by the flutter engine, you only need to store 4 batons.
-//  The baton for the first one that was asked for would've been returned immediately.)
-static intptr_t batons[64];
-static uint8_t i_batons = 0;
-static int scheduled_frames = 0;
 static pthread_t platform_thread_id;
 
 static struct engine_task *tasklist = NULL;
@@ -196,8 +173,9 @@ static struct input_event io_input_buffer[MAX_EVENTS_PER_READ];
 
 static bool make_current(void *userdata)
 {
+    debug("make_current");
     if (eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context) != EGL_TRUE) {
-        debug("make_current: could not make the context current.");
+        debug("make_current: could not make the context current. %d", eglGetError());
         return false;
     }
 
@@ -206,6 +184,7 @@ static bool make_current(void *userdata)
 
 static bool clear_current(void *userdata)
 {
+    debug("clear_current");
     if (eglMakeCurrent(egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) != EGL_TRUE) {
         debug("clear_current: could not clear the current context.");
         return false;
@@ -214,18 +193,9 @@ static bool clear_current(void *userdata)
     return true;
 }
 
-static void pageflip_handler(int fd, unsigned int frame, unsigned int sec, unsigned int usec, void *userdata)
-{
-    FlutterEngineTraceEventInstant("pageflip");
-    post_platform_task(&(struct engine_task) {
-        .type = kVBlankReply,
-        .target_time = 0,
-        .vblank_ns = sec * 1000000000ull + usec * 1000ull,
-    });
-}
-
 static void drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
 {
+    debug("drm_fb_destroy_callback");
     struct drm_fb *fb = data;
 
     if (fb->fb_id)
@@ -299,6 +269,7 @@ static struct drm_fb *drm_fb_get_from_bo(struct gbm_bo *bo)
 
 static bool present(void *userdata)
 {
+    debug("present");
     FlutterEngineTraceEventDurationBegin("present");
 
     eglSwapBuffers(egl.display, egl.surface);
@@ -316,6 +287,338 @@ static bool present(void *userdata)
 
     FlutterEngineTraceEventDurationEnd("present");
 
+    return true;
+}
+
+static drmModeConnector *find_connector(drmModeRes *resources)
+{
+    // iterate the connectors
+    for (int i = 0; i < resources->count_connectors; i++) {
+    drmModeConnector *connector = drmModeGetConnector(drm.fd, resources->connectors[i]);
+    if (connector->connection == DRM_MODE_CONNECTED)
+        return connector;
+    drmModeFreeConnector(connector);
+    }
+    // no connector found
+    return NULL;
+}
+
+static drmModeEncoder *find_encoder(drmModeRes *resources, drmModeConnector *connector)
+{
+    if (connector->encoder_id)
+    return drmModeGetEncoder(drm.fd, connector->encoder_id);
+    // no encoder found
+    return NULL;
+}
+
+static bool find_display_configuration()
+{
+    drmModeRes *resources = drmModeGetResources(drm.fd);
+    // find a connector
+    drmModeConnector *connector = find_connector(resources);
+    if (!connector) {
+        debug("Failed to get connector");
+        return false;
+    }
+
+    // save the connector_id
+    drm.connector_id = connector->connector_id;
+
+    // save the first mode
+    drm.mode = &connector->modes[0]; 
+    printf("resolution: %ix%i\n", drm.mode->hdisplay, drm.mode->vdisplay);
+
+    // find an encoder
+    drmModeEncoder *encoder = find_encoder(resources, connector);
+    if (!encoder) {
+        debug("failed to get encoder\r\n");
+        return false;
+    }
+
+    // find a CRTC
+    if (encoder->crtc_id) {
+        drm.crtc_id = encoder->crtc_id;
+        // crtc = drmModeGetCrtc(drm.fd, encoder->crtc_id);
+    }
+    drmModeFreeEncoder(encoder);
+
+    // fix this
+    //drmModeFreeConnector(connector);
+    drmModeFreeResources(resources);
+    return true;
+}
+
+static bool setup_opengl()
+{
+    debug("setup opengl");
+    gbm.device = gbm_create_device(drm.fd);
+    egl.display = eglGetDisplay(gbm.device);
+
+    if (!eglInitialize(egl.display, NULL, NULL)) {
+		debug("failed to initialize egl");
+		return false;
+	}
+
+    // create an OpenGL context
+    if(!eglBindAPI(EGL_OPENGL_API)){
+        debug("failed to bind api");
+        return false;
+    }
+
+
+    const EGLint attributes[] = {
+        EGL_RED_SIZE,8,
+        EGL_GREEN_SIZE,8,
+        EGL_BLUE_SIZE,8,
+        EGL_ALPHA_SIZE,8,
+        EGL_NONE,
+    };
+
+    // const EGLint attributes[] = {
+    //     EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+    //     EGL_RED_SIZE, 1,
+    //     EGL_GREEN_SIZE, 1,
+    //     EGL_BLUE_SIZE, 1,
+    //     EGL_ALPHA_SIZE, 0,
+    //     EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+    //     EGL_SAMPLES, 0,
+    //     EGL_NONE
+    // };
+
+    const char *egl_exts_client, *egl_exts_dpy, *gl_exts;
+
+    debug("Querying EGL client extensions...");
+    egl_exts_client = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
+
+    egl.eglGetPlatformDisplayEXT = (void *) eglGetProcAddress("eglGetPlatformDisplayEXT");
+    debug("Getting EGL display for GBM device...");
+    if (egl.eglGetPlatformDisplayEXT) egl.display = egl.eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_KHR, gbm.device,
+                                                                                     NULL);
+    else                              egl.display = eglGetDisplay((void *) gbm.device);
+
+    if (!egl.display) {
+        debug("Couldn't get EGL display");
+        return false;
+    }
+
+    EGLint num_config;
+    if(!eglChooseConfig(egl.display, attributes, &egl.config, 1, &num_config)) {
+        debug("failed to choose config");
+        return false;
+    }
+
+    egl.context = eglCreateContext(egl.display, egl.config, EGL_NO_CONTEXT, NULL);
+    if (!egl.context) {
+        debug("Failed to create context");
+        return false;
+    }
+
+    gbm.format = DRM_FORMAT_ARGB8888;
+
+    // create the GBM and EGL surface
+    gbm.surface = gbm_surface_create(gbm.device, drm.mode->hdisplay, drm.mode->vdisplay, gbm.format, 1);
+    if (!gbm.surface) {
+        debug("Failed to create surface\r\n");
+        return false;
+    }
+
+    egl.surface = eglCreateWindowSurface(egl.display, egl.config, gbm.surface, NULL);
+    if (!egl.surface) {
+        debug("failed to create window surface");
+        return false;
+    }
+    
+   if (!eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context)) {
+        debug("Could not make EGL context current to get OpenGL information");
+        return false;
+    }
+
+    debug("setup opengl here");
+
+
+    return true;
+}
+
+static bool swap_buffers()
+{
+  int ok;
+//   eglSwapBuffers(egl.display, egl.surface);
+//   struct gbm_bo *bo = gbm_surface_lock_front_buffer(gbm.surface);
+//   uint32_t handle = gbm_bo_get_handle(bo).u32;
+//   uint32_t pitch = gbm_bo_get_stride(bo);
+//   uint32_t fb;
+//   ok = drmModeAddFB(drm.fd, drm.mode->hdisplay, drm.mode->vdisplay, 24, 32, pitch, handle, &fb);
+//   if (ok) {
+//       debug("drmModeAddFB %d", ok);
+//       return false;
+//   }
+//   ok = drmModeSetCrtc(drm.fd, drm.crtc_id, fb, 0, 0, &drm.connector_id, 1, drm.mode);
+//   if (ok) {
+//       debug("drmModeSetCrtc %d", ok);
+//       return false;
+//   }
+    debug("Swapping buffers...");
+    eglSwapBuffers(egl.display, egl.surface);
+
+    debug("Locking front buffer...");
+    drm.previous_bo = gbm_surface_lock_front_buffer(gbm.surface);
+    uint32_t handle = gbm_bo_get_handle(drm.previous_bo).u32;
+    uint32_t pitch = gbm_bo_get_stride(drm.previous_bo);
+    uint32_t fb;
+    ok = drmModeAddFB(drm.fd, drm.mode->hdisplay, drm.mode->vdisplay, 24, 32, pitch, handle, &fb);
+    if (ok) {
+        debug("drmModeAddFB failed %d", ok);
+        return false;
+    }
+    ok = drmModeSetCrtc(drm.fd, drm.crtc_id, fb, 0, 0, &drm.connector_id, 1, drm.mode);
+    if (ok) {
+        debug("drmModeSetCrtc failed %d", ok);
+        return false;
+    }
+
+    // debug("getting new framebuffer for BO...");
+    // struct drm_fb *fb = drm_fb_get_from_bo(drm.previous_bo);
+    // if (!fb) {
+    //     debug("failed to get a new framebuffer BO");
+    //     return false;
+    // }
+
+    // debug("Setting CRTC...");
+    // ok = drmModeSetCrtc(drm.fd, drm.crtc_id, fb->fb_id, 0, 0, &drm.connector_id, 1, drm.mode);
+    // if (ok) {
+    //     debug("failed to set mode: %s %d\n", strerror(errno), glGetError());
+    //     return false;
+    // }
+
+    debug("Clearing current context...");
+    if (!eglMakeCurrent(egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)) {
+        debug("Could not clear EGL context");
+        return false;
+    }
+
+    return true;
+}
+
+static bool init_display()
+{
+    drm.fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
+    debug("opened card\r\n");
+    find_display_configuration();
+    setup_opengl();
+    swap_buffers();
+    return true;
+}
+
+/************************
+ * PLATFORM TASK-RUNNER *
+ ************************/
+static bool init_message_loop()
+{
+    platform_thread_id = pthread_self();
+    return true;
+}
+
+static bool run_message_loop(void)
+{
+    while (true) {
+        pthread_mutex_lock(&tasklist_lock);
+
+        // wait for a task to be inserted into the list
+        while (tasklist == NULL)
+            pthread_cond_wait(&task_added, &tasklist_lock);
+
+        // wait for a task to be ready to be run
+        uint64_t currenttime;
+        while (tasklist->target_time > (currenttime = FlutterEngineGetCurrentTime())) {
+            struct timespec abstargetspec;
+            clock_gettime(CLOCK_REALTIME, &abstargetspec);
+            uint64_t abstarget = abstargetspec.tv_nsec + abstargetspec.tv_sec * 1000000000ull +
+                                 (tasklist->target_time - currenttime);
+            abstargetspec.tv_nsec = abstarget % 1000000000;
+            abstargetspec.tv_sec =  abstarget / 1000000000;
+
+            pthread_cond_timedwait(&task_added, &tasklist_lock, &abstargetspec);
+        }
+
+        struct engine_task *task = tasklist;
+        tasklist = tasklist->next;
+
+        pthread_mutex_unlock(&tasklist_lock);
+        if (task->type == kFlutterTask) {
+            if (FlutterEngineRunTask(engine, &task->task) != kSuccess) {
+                debug("Error running platform task");
+                return false;
+            }
+        }
+
+        free(task);
+    }
+
+    return true;
+}
+
+static void post_platform_task(struct engine_task *task)
+{
+    struct engine_task *to_insert = malloc(sizeof(struct engine_task));
+    if (!to_insert) return;
+
+    memcpy(to_insert, task, sizeof(struct engine_task));
+    pthread_mutex_lock(&tasklist_lock);
+    if (tasklist == NULL || to_insert->target_time < tasklist->target_time) {
+        to_insert->next = tasklist;
+        tasklist = to_insert;
+    } else {
+        struct engine_task *prev = tasklist;
+        struct engine_task *current = tasklist->next;
+        while (current != NULL && to_insert->target_time > current->target_time) {
+            prev = current;
+            current = current->next;
+        }
+        to_insert->next = current;
+        prev->next = to_insert;
+    }
+
+    pthread_mutex_unlock(&tasklist_lock);
+    pthread_cond_signal(&task_added);
+}
+
+static void flutter_post_platform_task(FlutterTask task, uint64_t target_time, void *userdata)
+{
+    post_platform_task(&(struct engine_task) {
+        .type = kFlutterTask,
+        .task = task,
+        .target_time = target_time
+    });
+}
+
+static bool runs_platform_tasks_on_current_thread(void *userdata)
+{
+    return pthread_equal(pthread_self(), platform_thread_id) != 0;
+}
+
+static bool path_exists(const char *path)
+{
+    return access(path, R_OK) == 0;
+}
+
+static bool init_paths(void)
+{
+    if (!path_exists(flutter.asset_bundle_path)) {
+        debug("Asset Bundle Directory \"%s\" does not exist\n", flutter.asset_bundle_path);
+        return false;
+    }
+
+    snprintf(flutter.kernel_blob_path, sizeof(flutter.kernel_blob_path), "%s/kernel_blob.bin",
+             flutter.asset_bundle_path);
+    if (!path_exists(flutter.kernel_blob_path)) {
+        debug("Kernel blob does not exist inside Asset Bundle Directory.");
+        return false;
+    }
+
+    if (!path_exists(flutter.icu_data_path)) {
+        debug("ICU Data file not find at %s.\n", flutter.icu_data_path);
+        return false;
+    }
     return true;
 }
 
@@ -429,25 +732,10 @@ static const GLubyte *hacked_glGetString(GLenum name)
 
 static void *proc_resolver(void *userdata, const char *name)
 {
-    static int is_VC4 = -1;
     void      *address;
 
-    /*
-     * The mesa V3D driver reports some OpenGL ES extensions as supported and working
-     * even though they aren't. hacked_glGetString is a workaround for this, which will
-     * cut out the non-working extensions from the list of supported extensions.
-     */
-
-    if (name == NULL)
-        return NULL;
-
-    // first detect if we're running on a VideoCore 4 / using the VC4 driver.
-    if ((is_VC4 == -1) && (is_VC4 = strcmp(egl.renderer, "VC4 V3D 2.1") == 0))
-        printf( "detected VideoCore IV as underlying graphics chip, and VC4 as the driver.\n"
-                "Reporting modified GL_EXTENSIONS string that doesn't contain non-working extensions.");
-
     // if we do, and the symbol to resolve is glGetString, we return our hacked_glGetString.
-    if (is_VC4 && (strcmp(name, "glGetString") == 0))
+    if (strcmp(name, "glGetString") == 0)
         return hacked_glGetString;
 
     if ((address = dlsym(RTLD_DEFAULT, name)) || (address = eglGetProcAddress(name)))
@@ -456,604 +744,6 @@ static void *proc_resolver(void *userdata, const char *name)
     debug("proc_resolver: could not resolve symbol \"%s\"\n", name);
 
     return NULL;
-}
-
-static void vsync_callback(void *userdata, intptr_t baton)
-{
-    post_platform_task(&(struct engine_task) {
-        .type = kVBlankRequest,
-        .target_time = 0,
-        .baton = baton
-    });
-}
-
-/************************
- * PLATFORM TASK-RUNNER *
- ************************/
-static bool init_message_loop()
-{
-    platform_thread_id = pthread_self();
-    return true;
-}
-
-static bool run_message_loop(void)
-{
-    while (true) {
-        pthread_mutex_lock(&tasklist_lock);
-
-        // wait for a task to be inserted into the list
-        while (tasklist == NULL)
-            pthread_cond_wait(&task_added, &tasklist_lock);
-
-        // wait for a task to be ready to be run
-        uint64_t currenttime;
-        while (tasklist->target_time > (currenttime = FlutterEngineGetCurrentTime())) {
-            struct timespec abstargetspec;
-            clock_gettime(CLOCK_REALTIME, &abstargetspec);
-            uint64_t abstarget = abstargetspec.tv_nsec + abstargetspec.tv_sec * 1000000000ull +
-                                 (tasklist->target_time - currenttime);
-            abstargetspec.tv_nsec = abstarget % 1000000000;
-            abstargetspec.tv_sec =  abstarget / 1000000000;
-
-            pthread_cond_timedwait(&task_added, &tasklist_lock, &abstargetspec);
-        }
-
-        struct engine_task *task = tasklist;
-        tasklist = tasklist->next;
-
-        pthread_mutex_unlock(&tasklist_lock);
-        if (task->type == kVBlankRequest) {
-            if (scheduled_frames == 0) {
-                uint64_t ns;
-                drmCrtcGetSequence(drm.fd, drm.crtc_id, NULL, &ns);
-                FlutterEngineOnVsync(engine, task->baton, ns, ns + refresh_period_ns);
-            } else {
-                batons[(i_batons + (scheduled_frames - 1)) & 63] = task->baton;
-
-            }
-            scheduled_frames++;
-        } else if (task->type == kVBlankReply) {
-            if (scheduled_frames > 1) {
-                intptr_t baton = batons[i_batons];
-                i_batons = (i_batons + 1) & 63;
-                uint64_t ns = task->vblank_ns;
-                FlutterEngineOnVsync(engine, baton, ns, ns + refresh_period_ns);
-            }
-            scheduled_frames--;
-        } else if (task->type == kFlutterTask) {
-            if (FlutterEngineRunTask(engine, &task->task) != kSuccess) {
-                debug("Error running platform task");
-                return false;
-            }
-        }
-
-        free(task);
-    }
-
-    return true;
-}
-
-static void post_platform_task(struct engine_task *task)
-{
-    struct engine_task *to_insert = malloc(sizeof(struct engine_task));
-    if (!to_insert) return;
-
-    memcpy(to_insert, task, sizeof(struct engine_task));
-    pthread_mutex_lock(&tasklist_lock);
-    if (tasklist == NULL || to_insert->target_time < tasklist->target_time) {
-        to_insert->next = tasklist;
-        tasklist = to_insert;
-    } else {
-        struct engine_task *prev = tasklist;
-        struct engine_task *current = tasklist->next;
-        while (current != NULL && to_insert->target_time > current->target_time) {
-            prev = current;
-            current = current->next;
-        }
-        to_insert->next = current;
-        prev->next = to_insert;
-    }
-
-    pthread_mutex_unlock(&tasklist_lock);
-    pthread_cond_signal(&task_added);
-}
-
-static void flutter_post_platform_task(FlutterTask task, uint64_t target_time, void *userdata)
-{
-    post_platform_task(&(struct engine_task) {
-        .type = kFlutterTask,
-        .task = task,
-        .target_time = target_time
-    });
-}
-
-static bool runs_platform_tasks_on_current_thread(void *userdata)
-{
-    return pthread_equal(pthread_self(), platform_thread_id) != 0;
-}
-
-static bool path_exists(const char *path)
-{
-    return access(path, R_OK) == 0;
-}
-
-static bool init_paths(void)
-{
-    if (!path_exists(flutter.asset_bundle_path)) {
-        debug("Asset Bundle Directory \"%s\" does not exist\n", flutter.asset_bundle_path);
-        return false;
-    }
-
-    snprintf(flutter.kernel_blob_path, sizeof(flutter.kernel_blob_path), "%s/kernel_blob.bin",
-             flutter.asset_bundle_path);
-    if (!path_exists(flutter.kernel_blob_path)) {
-        debug("Kernel blob does not exist inside Asset Bundle Directory.");
-        return false;
-    }
-
-    if (!path_exists(flutter.icu_data_path)) {
-        debug("ICU Data file not find at %s.\n", flutter.icu_data_path);
-        return false;
-    }
-    return true;
-}
-
-static bool init_display(void)
-{
-    /**********************
-     * DRM INITIALIZATION *
-     **********************/
-
-    drmModeRes *resources = NULL;
-    drmModeConnector *connector;
-    drmModeEncoder *encoder = NULL;
-    int ok;
-
-    if (!drm.has_device) {
-        debug("Finding a suitable DRM device, since none is given...");
-        drmDevicePtr devices[64] = { NULL };
-        int fd = -1;
-
-        int num_devices = drmGetDevices2(0, devices, sizeof(devices) / sizeof(drmDevicePtr));
-        if (num_devices < 0) {
-            debug("could not query drm device list: %s\n", strerror(-num_devices));
-            return false;
-        }
-
-        debug("looking for a suitable DRM device from %d available DRM devices...\n", num_devices);
-        for (int i = 0; i < num_devices; i++) {
-            drmDevicePtr device = devices[i];
-
-            debug("  devices[%d]: \n", i);
-
-            debug("    available nodes: ");
-            if (device->available_nodes & (1 << DRM_NODE_PRIMARY)) debug("DRM_NODE_PRIMARY, ");
-            if (device->available_nodes & (1 << DRM_NODE_CONTROL)) debug("DRM_NODE_CONTROL, ");
-            if (device->available_nodes & (1 << DRM_NODE_RENDER))  debug("DRM_NODE_RENDER");
-
-            for (int j = 0; j < DRM_NODE_MAX; j++) {
-                if (device->available_nodes & (1 << j)) {
-                    debug("    nodes[%s] = \"%s\"\n",
-                          j == DRM_NODE_PRIMARY ? "DRM_NODE_PRIMARY" :
-                          j == DRM_NODE_CONTROL ? "DRM_NODE_CONTROL" :
-                          j == DRM_NODE_RENDER  ? "DRM_NODE_RENDER" : "unknown",
-                          device->nodes[j]
-                         );
-                }
-            }
-
-            debug("    bustype: %s\n",
-                  device->bustype == DRM_BUS_PCI ? "DRM_BUS_PCI" :
-                  device->bustype == DRM_BUS_USB ? "DRM_BUS_USB" :
-                  device->bustype == DRM_BUS_PLATFORM ? "DRM_BUS_PLATFORM" :
-                  device->bustype == DRM_BUS_HOST1X ? "DRM_BUS_HOST1X" :
-                  "unknown"
-                 );
-
-            if (device->bustype == DRM_BUS_PLATFORM) {
-                debug("    businfo.fullname: %s\n", device->businfo.platform->fullname);
-                // seems like deviceinfo.platform->compatible is not really used.
-                //debug("    deviceinfo.compatible: %s\n", device->deviceinfo.platform->compatible);
-            }
-
-            // we want a device that's DRM_NODE_PRIMARY and that we can call a drmModeGetResources on.
-            if (drm.has_device) continue;
-            if (!(device->available_nodes & (1 << DRM_NODE_PRIMARY))) continue;
-
-            debug("    opening DRM device candidate at \"%s\"...\n", device->nodes[DRM_NODE_PRIMARY]);
-            fd = open(device->nodes[DRM_NODE_PRIMARY], O_RDWR);
-            if (fd < 0) {
-                debug("      could not open DRM device candidate at \"%s\": %s\n", device->nodes[DRM_NODE_PRIMARY],
-                      strerror(errno));
-                continue;
-            }
-
-            debug("    getting resources of DRM device candidate at \"%s\"...\n", device->nodes[DRM_NODE_PRIMARY]);
-            resources = drmModeGetResources(fd);
-            if (resources == NULL) {
-                debug("      could not query DRM resources for DRM device candidate at \"%s\":",
-                      device->nodes[DRM_NODE_PRIMARY]);
-                if ((errno = EOPNOTSUPP) || (errno = EINVAL)) debug("doesn't look like a modeset device.");
-                else                                          debug("%s\n", strerror(errno));
-                close(fd);
-                continue;
-            }
-
-            // we found our DRM device.
-            debug("    chose \"%s\" as its DRM device.\n", device->nodes[DRM_NODE_PRIMARY]);
-            drm.fd = fd;
-            drm.has_device = true;
-            snprintf(drm.device, sizeof(drm.device) - 1, "%s", device->nodes[DRM_NODE_PRIMARY]);
-        }
-
-        if (!drm.has_device) {
-            debug("couldn't find a usable DRM device");
-            return false;
-        }
-    }
-
-    if (drm.fd <= 0) {
-        debug("Opening DRM device...");
-        drm.fd = open(drm.device, O_RDWR);
-        if (drm.fd < 0) {
-            debug("Could not open DRM device");
-            return false;
-        }
-    }
-
-    if (!resources) {
-        debug("Getting DRM resources...");
-        resources = drmModeGetResources(drm.fd);
-        if (resources == NULL) {
-            if ((errno == EOPNOTSUPP) || (errno = EINVAL))
-                debug("%s doesn't look like a modeset device\n", drm.device);
-            else
-                debug("drmModeGetResources failed: %s\n", strerror(errno));
-
-            return false;
-        }
-    }
-
-    debug("Finding a connected connector from %d available connectors...\n", resources->count_connectors);
-    connector = NULL;
-    for (int i = 0; i < resources->count_connectors; i++) {
-        drmModeConnector *conn = drmModeGetConnector(drm.fd, resources->connectors[i]);
-
-        debug("  connectors[%d]: connected? %s, type: 0x%02X%s, %umm x %umm\n",
-              i,
-              (conn->connection == DRM_MODE_CONNECTED) ? "yes" :
-              (conn->connection == DRM_MODE_DISCONNECTED) ? "no" : "unknown",
-              conn->connector_type,
-              (conn->connector_type == DRM_MODE_CONNECTOR_HDMIA) ? " (HDMI-A)" :
-              (conn->connector_type == DRM_MODE_CONNECTOR_HDMIB) ? " (HDMI-B)" :
-              (conn->connector_type == DRM_MODE_CONNECTOR_DSI) ? " (DSI)" :
-              (conn->connector_type == DRM_MODE_CONNECTOR_DisplayPort) ? " (DisplayPort)" : "",
-              conn->mmWidth, conn->mmHeight
-             );
-
-        if ((connector == NULL) && (conn->connection == DRM_MODE_CONNECTED)) {
-            connector = conn;
-
-            // only update the physical size of the display if the values
-            //   are not yet initialized / not set with a commandline option
-            if ((width_mm == 0) && (height_mm == 0)) {
-                if ((conn->mmWidth == 160) && (conn->mmHeight == 90)) {
-                    // if width and height is exactly 160mm x 90mm, the values are probably bogus.
-                    width_mm = 0;
-                    height_mm = 0;
-                } else if ((conn->connector_type == DRM_MODE_CONNECTOR_DSI) && (conn->mmWidth == 0)
-                           && (conn->mmHeight == 0)) {
-                    // if it's connected via DSI, and the width & height are 0,
-                    //   it's probably the official 7 inch touchscreen.
-                    width_mm = 155;
-                    height_mm = 86;
-                } else {
-                    width_mm = conn->mmWidth;
-                    height_mm = conn->mmHeight;
-                }
-            }
-        } else {
-            drmModeFreeConnector(conn);
-        }
-    }
-    if (!connector) {
-        debug("could not find a connected connector!");
-        return false;
-    }
-
-    debug("Choosing DRM mode from %d available modes...\n", connector->count_modes);
-    bool found_preferred = false;
-    for (int i = 0, area = 0; i < connector->count_modes; i++) {
-        drmModeModeInfo *current_mode = &connector->modes[i];
-
-        debug("  modes[%d]: name: \"%s\", %ux%u%s, %uHz, type: %u, flags: %u\n",
-              i, current_mode->name, current_mode->hdisplay, current_mode->vdisplay,
-              (current_mode->flags & DRM_MODE_FLAG_INTERLACE) ? "i" : "p",
-              current_mode->vrefresh, current_mode->type, current_mode->flags
-             );
-
-        if (found_preferred) continue;
-
-        // we choose the highest resolution with the highest refresh rate, preferably non-interlaced (= progressive) here.
-        int current_area = current_mode->hdisplay * current_mode->vdisplay;
-        if (( current_area  > area) ||
-                ((current_area == area) && (current_mode->vrefresh >  refresh_rate)) ||
-                ((current_area == area) && (current_mode->vrefresh == refresh_rate)
-                 && ((current_mode->flags & DRM_MODE_FLAG_INTERLACE) == 0)) ||
-                ( current_mode->type & DRM_MODE_TYPE_PREFERRED)) {
-
-            drm.mode = current_mode;
-            width = current_mode->hdisplay;
-            height = current_mode->vdisplay;
-            refresh_rate = current_mode->vrefresh;
-            refresh_period_ns = 1000000000ul / refresh_rate;
-
-            area = current_area;
-
-            // if the preferred DRM mode is bogus, we're screwed.
-            if (current_mode->type & DRM_MODE_TYPE_PREFERRED) {
-                debug("    this mode is preferred by DRM. (DRM_MODE_TYPE_PREFERRED)");
-                found_preferred = true;
-            }
-        }
-    }
-
-    if (!drm.mode) {
-        debug("could not find a suitable DRM mode!");
-        return false;
-    }
-
-    // calculate the pixel ratio
-    if (pixel_ratio == 0.0) {
-        if ((width_mm == 0) || (height_mm == 0)) {
-            pixel_ratio = 1.0;
-        } else {
-            pixel_ratio = (10.0 * width) / (width_mm * 38.0);
-            if (pixel_ratio < 1.0) pixel_ratio = 1.0;
-        }
-    }
-
-    debug("Display properties:\n  %u x %u, %uHz\n  %umm x %umm\n  pixel_ratio = %f\n", width, height,
-          refresh_rate, width_mm, height_mm, pixel_ratio);
-
-    debug("Finding DRM encoder...");
-    for (int i = 0; i < resources->count_encoders; i++) {
-        encoder = drmModeGetEncoder(drm.fd, resources->encoders[i]);
-        if (encoder->encoder_id == connector->encoder_id)
-            break;
-        drmModeFreeEncoder(encoder);
-        encoder = NULL;
-    }
-
-    if (encoder) {
-        drm.crtc_id = encoder->crtc_id;
-    } else {
-        debug("could not find a suitable crtc!");
-        return false;
-    }
-
-    for (int i = 0; i < resources->count_crtcs; i++) {
-        if (resources->crtcs[i] == drm.crtc_id) {
-            drm.crtc_index = i;
-            break;
-        }
-    }
-
-    drmModeFreeResources(resources);
-
-    drm.connector_id = connector->connector_id;
-
-    /**********************
-     * GBM INITIALIZATION *
-     **********************/
-    debug("Creating GBM device");
-    gbm.device = gbm_create_device(drm.fd);
-    gbm.format = DRM_FORMAT_RGB565;
-    gbm.surface = NULL;
-    gbm.modifier = DRM_FORMAT_MOD_LINEAR;
-
-    gbm.surface = gbm_surface_create_with_modifiers(gbm.device, width, height, gbm.format, &gbm.modifier, 1);
-
-    if (!gbm.surface) {
-        if (gbm.modifier != DRM_FORMAT_MOD_LINEAR) {
-            debug("GBM Surface creation modifiers requested but not supported by GBM");
-            return false;
-        }
-        gbm.surface = gbm_surface_create(gbm.device, width, height, gbm.format,
-                                         GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
-    }
-
-    if (!gbm.surface) {
-        debug("failed to create GBM surface");
-        return false;
-    }
-
-    /**********************
-     * EGL INITIALIZATION *
-     **********************/
-    EGLint major, minor;
-
-    static const EGLint context_attribs[] = {
-        EGL_CONTEXT_CLIENT_VERSION, 2,
-        EGL_NONE
-    };
-
-    const EGLint config_attribs[] = {
-        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-        EGL_RED_SIZE, 1,
-        EGL_GREEN_SIZE, 1,
-        EGL_BLUE_SIZE, 1,
-        EGL_ALPHA_SIZE, 0,
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-        EGL_SAMPLES, 0,
-        EGL_NONE
-    };
-
-    const char *egl_exts_client, *egl_exts_dpy, *gl_exts;
-
-    debug("Querying EGL client extensions...");
-    egl_exts_client = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
-
-    egl.eglGetPlatformDisplayEXT = (void *) eglGetProcAddress("eglGetPlatformDisplayEXT");
-    debug("Getting EGL display for GBM device...");
-    if (egl.eglGetPlatformDisplayEXT) egl.display = egl.eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_KHR, gbm.device,
-                                                                                     NULL);
-    else                              egl.display = eglGetDisplay((void *) gbm.device);
-
-    if (!egl.display) {
-        debug("Couldn't get EGL display");
-        return false;
-    }
-
-    debug("Initializing EGL...");
-    if (!eglInitialize(egl.display, &major, &minor)) {
-        debug("failed to initialize EGL");
-        return false;
-    }
-
-    debug("Querying EGL display extensions...");
-    egl_exts_dpy = eglQueryString(egl.display, EGL_EXTENSIONS);
-    egl.modifiers_supported = strstr(egl_exts_dpy, "EGL_EXT_image_dma_buf_import_modifiers") != NULL;
-
-    debug("Using display %p with EGL version %d.%d\n", egl.display, major, minor);
-    debug("===================================");
-    debug("EGL information:");
-    debug("  version: %s\n", eglQueryString(egl.display, EGL_VERSION));
-    debug("  vendor: \"%s\"\n", eglQueryString(egl.display, EGL_VENDOR));
-    debug("  client extensions: \"%s\"\n", egl_exts_client);
-    debug("  display extensions: \"%s\"\n", egl_exts_dpy);
-    debug("===================================");
-
-    debug("Binding OpenGL ES API...");
-    if (!eglBindAPI(EGL_OPENGL_ES_API)) {
-        debug("failed to bind OpenGL ES API");
-        return false;
-    }
-
-
-    debug("Choosing EGL config...");
-    EGLint count = 0, matched = 0;
-    EGLConfig *configs;
-    bool _found_matching_config = false;
-
-    if (!eglGetConfigs(egl.display, NULL, 0, &count) || count < 1) {
-        debug("No EGL configs to choose from.");
-        return false;
-    }
-
-    configs = malloc(count * sizeof(EGLConfig));
-    if (!configs) return false;
-
-    debug("Finding EGL configs with appropriate attributes...");
-    if (!eglChooseConfig(egl.display, config_attribs, configs, count, &matched) || !matched) {
-        debug("No EGL configs with appropriate attributes.");
-        free(configs);
-        return false;
-    }
-    debug("eglChooseConfig done");
-
-    if (!gbm.format) {
-        debug("!gbm.format");
-        _found_matching_config = true;
-    } else {
-        debug("gbm.format");
-        for (int i = 0; i < count; i++) {
-            EGLint id;
-            debug("checking id=%d\n", id);
-            if (!eglGetConfigAttrib(egl.display, configs[i], EGL_NATIVE_VISUAL_ID, &id))    continue;
-
-            if (id == gbm.format) {
-                debug("gbm.format=%d\n", id);
-
-                egl.config = configs[i];
-                _found_matching_config = true;
-                break;
-            }
-        }
-    }
-    free(configs);
-
-    if (!_found_matching_config) {
-        debug("Could not find context with appropriate attributes and matching native visual ID.");
-        return false;
-    }
-
-    debug("Creating EGL context...");
-    egl.context = eglCreateContext(egl.display, egl.config, EGL_NO_CONTEXT, context_attribs);
-    if (egl.context == NULL) {
-        debug("failed to create EGL context");
-        return false;
-    }
-
-    debug("Creating EGL window surface...");
-    egl.surface = eglCreateWindowSurface(egl.display, egl.config, (EGLNativeWindowType) gbm.surface, NULL);
-    if (egl.surface == EGL_NO_SURFACE) {
-        debug("failed to create EGL window surface");
-        return false;
-    }
-
-    if (!eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context)) {
-        debug("Could not make EGL context current to get OpenGL information");
-        return false;
-    }
-
-    egl.renderer = (char *) glGetString(GL_RENDERER);
-
-    gl_exts = (char *) glGetString(GL_EXTENSIONS);
-    debug("===================================");
-    debug("OpenGL ES information:");
-    debug("  version: \"%s\"\n", glGetString(GL_VERSION));
-    debug("  shading language version: \"%s\"\n", glGetString(GL_SHADING_LANGUAGE_VERSION));
-    debug("  vendor: \"%s\"\n", glGetString(GL_VENDOR));
-    debug("  renderer: \"%s\"\n", egl.renderer);
-    debug("  extensions: \"%s\"\n", gl_exts);
-    debug("===================================");
-
-    if (strncmp(egl.renderer, "llvmpipe", sizeof("llvmpipe") - 1) == 0)
-        debug("Detected llvmpipe (ie. software rendering) as the OpenGL ES renderer. Make sure to run as root");
-
-    drm.evctx = (drmEventContext) {
-        .version = 4,
-        .vblank_handler = NULL,
-        .page_flip_handler = pageflip_handler,
-        .page_flip_handler2 = NULL,
-        .sequence_handler = NULL
-    };
-
-    debug("Swapping buffers...");
-    eglSwapBuffers(egl.display, egl.surface);
-
-    debug("Locking front buffer...");
-    drm.previous_bo = gbm_surface_lock_front_buffer(gbm.surface);
-
-    debug("getting new framebuffer for BO...");
-    struct drm_fb *fb = drm_fb_get_from_bo(drm.previous_bo);
-    if (!fb) {
-        debug("failed to get a new framebuffer BO");
-        return false;
-    }
-
-    debug("Setting CRTC...");
-    ok = drmModeSetCrtc(drm.fd, drm.crtc_id, fb->fb_id, 0, 0, &drm.connector_id, 1, drm.mode);
-    if (ok) {
-        debug("failed to set mode: %s\n", strerror(errno));
-        return false;
-    }
-
-    debug("Clearing current context...");
-    if (!eglMakeCurrent(egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)) {
-        debug("Could not clear EGL context");
-        return false;
-    }
-
-    debug("finished display setup!");
-
-    return true;
-}
-
-static void destroy_display(void)
-{
-    debug("destroy_display not yet implemented");
 }
 
 static bool init_application(void)
@@ -1066,25 +756,18 @@ static bool init_application(void)
     flutter.renderer_config.open_gl.present         = present;
     flutter.renderer_config.open_gl.fbo_callback    = fbo_callback;
     flutter.renderer_config.open_gl.gl_proc_resolver = proc_resolver;
-    flutter.renderer_config.open_gl.surface_transformation = NULL;
+
 
     // configure flutter
     flutter.args.struct_size                = sizeof(FlutterProjectArgs);
     flutter.args.assets_path                = flutter.asset_bundle_path;
     flutter.args.icu_data_path              = flutter.icu_data_path;
     flutter.args.isolate_snapshot_data_size = 0;
-    flutter.args.isolate_snapshot_data      = NULL;
     flutter.args.isolate_snapshot_instructions_size = 0;
-    flutter.args.isolate_snapshot_instructions   = NULL;
     flutter.args.vm_snapshot_data_size      = 0;
-    flutter.args.vm_snapshot_data           = NULL;
     flutter.args.vm_snapshot_instructions_size = 0;
-    flutter.args.vm_snapshot_instructions   = NULL;
     flutter.args.command_line_argc          = flutter.engine_argc;
     flutter.args.command_line_argv          = flutter.engine_argv;
-    flutter.args.platform_message_callback  = NULL; // Not needed yet.
-    flutter.args.vsync_callback =
-        vsync_callback; // See flutter-pi fix if display driver doesn't provide vblank timestamps
     flutter.args.custom_task_runners        = &(FlutterCustomTaskRunners) {
         .struct_size = sizeof(FlutterCustomTaskRunners),
         .platform_task_runner = &(FlutterTaskRunnerDescription) {
@@ -1111,7 +794,10 @@ static bool init_application(void)
     int ok = FlutterEngineSendWindowMetricsEvent(
                  engine,
     &(FlutterWindowMetricsEvent) {
-        .struct_size = sizeof(FlutterWindowMetricsEvent), .width = width, .height = height, .pixel_ratio = pixel_ratio
+        .struct_size = sizeof(FlutterWindowMetricsEvent), 
+        .width = drm.mode->hdisplay, 
+        .height = drm.mode->vdisplay, 
+        .pixel_ratio = pixel_ratio
     }
              ) == kSuccess;
 
@@ -1317,6 +1003,7 @@ int main(int argc, char **argv)
     // initialize display
     debug("initializing display...");
     if (!init_display()) {
+        debug("failed to initialize display");
         return EXIT_FAILURE;
     }
 
@@ -1343,7 +1030,6 @@ int main(int argc, char **argv)
 
     // exit
     destroy_application();
-    destroy_display();
 
     return EXIT_SUCCESS;
 }

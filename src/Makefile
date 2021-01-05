@@ -24,10 +24,13 @@ LDFLAGS += -ldrm  -ldl -lgbm -lGLESv2 -lEGL -pthread
 LDFLAGS += -L$(PREFIX) -lflutter_engine
 endif
 
-all: $(PREFIX)/flutter_embedder
+all: $(PREFIX)/flutter_embedder $(PREFIX)/drm_test
 
 $(PREFIX)/flutter_embedder: $(PREFIX) $(PREFIX)/libflutter_engine.so $(PREFIX)/icudtl.dat flutter_embedder.h ${SRC}
 	$(CC) ${SRC} ${CFLAGS} $(LDFLAGS) -o $(PREFIX)/flutter_embedder
+
+$(PREFIX)/drm_test: $(PREFIX) deleteme.c
+	$(CC) deleteme.c -o $(PREFIX)/drm_test $(shell pkg-config libdrm --cflags) $(shell pkg-config libdrm --libs) -ldrm  -ldl -lgbm -lGLESv2 -lEGL
 
 ifeq ($(CROSSCOMPILE),)
 include precompiled_engine_x86_64.mk
