@@ -334,7 +334,6 @@ static bool find_display_configuration()
         debug("failed to get encoder\r\n");
         return false;
     }
-
     // find a CRTC
     if (encoder->crtc_id) {
         drm.crtc_id = encoder->crtc_id;
@@ -371,6 +370,8 @@ static bool setup_opengl()
         EGL_GREEN_SIZE,8,
         EGL_BLUE_SIZE,8,
         EGL_ALPHA_SIZE,8,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_SAMPLES, 0,
         EGL_NONE,
     };
 
@@ -392,9 +393,9 @@ static bool setup_opengl()
 
     egl.eglGetPlatformDisplayEXT = (void *) eglGetProcAddress("eglGetPlatformDisplayEXT");
     debug("Getting EGL display for GBM device...");
-    if (egl.eglGetPlatformDisplayEXT) egl.display = egl.eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_KHR, gbm.device,
-                                                                                     NULL);
-    else                              egl.display = eglGetDisplay((void *) gbm.device);
+    if (egl.eglGetPlatformDisplayEXT) egl.display = egl.eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_KHR, gbm.device, NULL);
+    else                              
+    egl.display = eglGetDisplay((void *) gbm.device);
 
     if (!egl.display) {
         debug("Couldn't get EGL display");
@@ -413,7 +414,7 @@ static bool setup_opengl()
         return false;
     }
 
-    gbm.format = DRM_FORMAT_ARGB8888;
+    gbm.format = DRM_FORMAT_XRGB8888;
 
     // create the GBM and EGL surface
     gbm.surface = gbm_surface_create(gbm.device, drm.mode->hdisplay, drm.mode->vdisplay, gbm.format, 1);
