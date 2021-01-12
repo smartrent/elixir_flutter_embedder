@@ -515,7 +515,7 @@ static bool swap_buffers()
 
 static bool init_display()
 {
-    drm.fd = open("/dev/dri/card1", O_RDWR | O_CLOEXEC);
+    drm.fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
     debug("opened card\r\n");
     find_display_configuration();
     setup_opengl();
