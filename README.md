@@ -1,5 +1,7 @@
 # FlutterEmbedder
 
+FlutterEmbedder.start_link([flutter_assets: "/home/pi/my_apps_flutter_assets"])
+
 [Flutter](https://flutter.dev) is an open-source UI software development kit
 created by Google. This project aims to use the Flutter "embedder" system to
 provide embedded UI applications targeting Nerves devices.

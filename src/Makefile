@@ -3,7 +3,7 @@ BUILD  = $(MIX_APP_PATH)/obj
 
 SRC = erlcmd.c embedder_platform_message.c
 
-ifeq ($(CROSSCOMPILE),)
+ifeq ($(CROSSCOMPILE),a)
 # Not Crosscompiled build
 SRC += embedder_glfw.c
 # glfw
@@ -33,10 +33,11 @@ $(PREFIX)/drm_test: $(PREFIX) deleteme.c
 	$(CC) deleteme.c -o $(PREFIX)/drm_test $(shell pkg-config libdrm --cflags) $(shell pkg-config libdrm --libs) -ldrm  -ldl -lgbm -lGLESv2 -lEGL
 
 ifeq ($(CROSSCOMPILE),)
-include precompiled_engine_x86_64.mk
+include precompiled_engine_armv7.mk
+# include precompiled_engine_x86_64.mk
 else
 # include precompiled_engine_armv7.mk
-include precompiled_engine_aarch64.mk
+# include precompiled_engine_aarch64.mk
 endif
 
 format:

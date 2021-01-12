@@ -292,12 +292,16 @@ static bool present(void *userdata)
 
 static drmModeConnector *find_connector(drmModeRes *resources)
 {
+    debug("find_connector");
+    debug("find_connector %d", resources->count_connectors);
     // iterate the connectors
     for (int i = 0; i < resources->count_connectors; i++) {
-    drmModeConnector *connector = drmModeGetConnector(drm.fd, resources->connectors[i]);
-    if (connector->connection == DRM_MODE_CONNECTED)
-        return connector;
-    drmModeFreeConnector(connector);
+        debug("checking connector");
+        drmModeConnector *connector = drmModeGetConnector(drm.fd, resources->connectors[i]);
+        if (connector->connection == DRM_MODE_CONNECTED)
+            return connector;
+        debug("not that one");
+        drmModeFreeConnector(connector);
     }
     // no connector found
     return NULL;
@@ -313,13 +317,22 @@ static drmModeEncoder *find_encoder(drmModeRes *resources, drmModeConnector *con
 
 static bool find_display_configuration()
 {
+    debug("drmModeGetResources before");
     drmModeRes *resources = drmModeGetResources(drm.fd);
+    if(!resources) {
+        error("drmModeGetResources failed");
+        return false;
+    }
+    debug("drmModeGetResources after");
     // find a connector
+    debug("find_connector before");
     drmModeConnector *connector = find_connector(resources);
+    debug("find_connector after");
     if (!connector) {
         debug("Failed to get connector");
         return false;
     }
+    debug("found connector");
 
     // save the connector_id
     drm.connector_id = connector->connector_id;
@@ -386,7 +399,7 @@ static bool setup_opengl()
     //     EGL_NONE
     // };
 
-    const char *egl_exts_client, *egl_exts_dpy, *gl_exts;
+    const char *egl_exts_client;
 
     debug("Querying EGL client extensions...");
     egl_exts_client = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
@@ -502,7 +515,7 @@ static bool swap_buffers()
 
 static bool init_display()
 {
-    drm.fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
+    drm.fd = open("/dev/dri/card1", O_RDWR | O_CLOEXEC);
     debug("opened card\r\n");
     find_display_configuration();
     setup_opengl();
