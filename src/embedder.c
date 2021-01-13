@@ -134,11 +134,11 @@ void *pollfd_thread_function(void *vargp)
 
 int main(int argc, const char *argv[])
 {
-#ifdef DEBUG
-#ifdef LOG_PATH
-    log_location = fopen(LOG_PATH, "w");
-#endif
-#endif
+// #ifdef DEBUG
+// #ifdef LOG_PATH
+//     log_location = fopen(LOG_PATH, "w");
+// #endif
+// #endif
     if (argc != 3) {
         error("Invalid Arguments");
         exit(EXIT_FAILURE);
@@ -193,15 +193,20 @@ int main(int argc, const char *argv[])
 
     args.custom_task_runners = &custom_task_runners;
 
+    debug("FlutterEngineInitialize start");
     FlutterEngineResult result = FlutterEngineInitialize(FLUTTER_ENGINE_VERSION, &config, &args, NULL, &engine);
     assert(result == kSuccess && engine != NULL);
+    debug("FlutterEngineInitialize end");
 
     debug("initializing gfx");
     if (gfx_init(engine) < 0) {
         error("gfx");
         exit(EXIT_FAILURE);
     }
+
+    debug("FlutterEngineRunInitialized start");
     result = FlutterEngineRunInitialized(engine);
+    debug("FlutterEngineRunInitialized end");
     assert(result == kSuccess && engine != NULL);
 
     // FlutterEngineResult result = FlutterEngineRun(FLUTTER_ENGINE_VERSION, &config, &args, NULL, engine);
@@ -217,6 +222,7 @@ int main(int argc, const char *argv[])
 
     // Enter the main loop
     gfx_loop();
+    error("gfx_loop exit");
 
     if (pthread_join(flutter_embedder_pollfd_thread, NULL) < 0) {
         error("pthread_join");
