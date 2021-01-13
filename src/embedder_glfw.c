@@ -2,23 +2,20 @@
 #include <errno.h>
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include <stdio.h>
+#include <dlfcn.h>
 
 #include "embedder_gfx.h"
 #include "flutter_embedder.h"
+#include "debug.h"
 
 // This value is calculated after the window is created.
 static double g_pixelRatio = 1.0;
 static const size_t kInitialWindowWidth = 800;
 static const size_t kInitialWindowHeight = 600;
-GLFWwindow *window;
+GLFWwindow* window;
 
-// There is probably a better way to do this.
-extern FlutterEngine engine;
-
-void GLFWcursorPositionCallbackAtPhase(GLFWwindow *window,
-                                       FlutterPointerPhase phase,
-                                       double x,
-                                       double y)
+void GLFWcursorPositionCallbackAtPhase(GLFWwindow *window, FlutterPointerPhase phase, double x, double y)
 {
     FlutterPointerEvent event = {};
     event.struct_size = sizeof(event);
@@ -34,10 +31,7 @@ void GLFWcursorPositionCallback(GLFWwindow *window, double x, double y)
     GLFWcursorPositionCallbackAtPhase(window, kMove, x, y);
 }
 
-void GLFWmouseButtonCallback(GLFWwindow *window,
-                             int key,
-                             int action,
-                             int mods)
+void GLFWmouseButtonCallback(GLFWwindow *window, int key, int action, int mods)
 {
     if (key == GLFW_MOUSE_BUTTON_1 && action == GLFW_PRESS) {
         double x, y;
@@ -54,11 +48,7 @@ void GLFWmouseButtonCallback(GLFWwindow *window,
     }
 }
 
-static void GLFWKeyCallback(GLFWwindow *window,
-                            int key,
-                            int scancode,
-                            int action,
-                            int mods)
+void GLFWKeyCallback(GLFWwindow *window, int key, int scancode, int action, int mods)
 {
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
         glfwSetWindowShouldClose(window, GLFW_TRUE);
@@ -75,73 +65,42 @@ void GLFWwindowSizeCallback(GLFWwindow *window, int width, int height)
     FlutterEngineSendWindowMetricsEvent(glfwGetWindowUserPointer(window), &event);
 }
 
-static bool runs_platform_tasks_on_current_thread(void *userdata)
+bool runs_platform_tasks_on_current_thread(void *userdata)
 {
     return true;
 }
 
-static void on_post_flutter_task(
+void on_post_flutter_task(
     FlutterTask task,
     uint64_t target_time,
-    void *userdata
+    void* userdata
 )
 {
-    FlutterEngineRunTask(engine, &task);
+    FlutterEngineRunTask(glfwGetWindowUserPointer(window), &task);
     return;
 }
 
-static bool make_current(void *userdata)
+bool gfx_make_current(void *userdata)
 {
-    glfwMakeContextCurrent((GLFWwindow *)userdata);
+    glfwMakeContextCurrent(window);
     glewInit();
     return true;
 }
 
-static bool clear_current(void *userdata)
+bool gfx_clear_current(void *userdata)
 {
-    glfwMakeContextCurrent((GLFWwindow *)userdata);
+    glfwMakeContextCurrent(window);
     return true;
 }
 
-static bool present(void *userdata)
+bool gfx_present(void *userdata)
 {
-    glfwSwapBuffers((GLFWwindow *)userdata);
+    glfwSwapBuffers(window);
     return true;
 }
 
-static uint32_t fbo_callback(void *userdata)
+uint32_t gfx_fbo_callback(void *userdata)
 {
-    return 0;
-}
-
-static size_t run_flutter(GLFWwindow *window, FlutterProjectArgs *args)
-{
-    FlutterRendererConfig config = {};
-    config.type = kOpenGL;
-    config.open_gl.struct_size = sizeof(config.open_gl);
-    config.open_gl.make_current = make_current;
-    config.open_gl.clear_current = clear_current;
-    config.open_gl.present = present;
-    config.open_gl.fbo_callback = fbo_callback;
-
-    FlutterTaskRunnerDescription custom_task_runner_description = {
-        .struct_size = sizeof(FlutterTaskRunnerDescription),
-        .user_data = NULL,
-        .runs_task_on_current_thread_callback = runs_platform_tasks_on_current_thread,
-        .post_task_callback = on_post_flutter_task
-    };
-
-    FlutterCustomTaskRunners custom_task_runners = {
-        .struct_size = sizeof(FlutterCustomTaskRunners),
-        .platform_task_runner = &custom_task_runner_description
-    };
-
-    args->custom_task_runners = &custom_task_runners;
-    FlutterEngineResult result = FlutterEngineRun(FLUTTER_ENGINE_VERSION, &config, args, window, &engine);
-    assert(result == kSuccess && engine != NULL);
-
-    glfwSetWindowUserPointer(window, engine);
-    GLFWwindowSizeCallback(window, kInitialWindowWidth, kInitialWindowHeight);
     return 0;
 }
 
@@ -149,7 +108,7 @@ static size_t run_flutter(GLFWwindow *window, FlutterProjectArgs *args)
  * elixir embedder "callbacks"
  */
 
-size_t gfx_init(FlutterProjectArgs *args)
+size_t gfx_init(FlutterEngine engine)
 {
     int result;
     result = glfwInit();
@@ -164,10 +123,9 @@ size_t gfx_init(FlutterProjectArgs *args)
     glfwGetFramebufferSize(window, &framebuffer_width, &framebuffer_height);
     g_pixelRatio = framebuffer_width / kInitialWindowWidth;
 
-    result = run_flutter(window, args);
-    if (result < 0)
-        return result;
 
+    glfwSetWindowUserPointer(window, engine);
+    GLFWwindowSizeCallback(window, kInitialWindowWidth, kInitialWindowHeight);
     glfwSetKeyCallback(window, GLFWKeyCallback);
     glfwSetWindowSizeCallback(window, GLFWwindowSizeCallback);
     glfwSetMouseButtonCallback(window, GLFWmouseButtonCallback);

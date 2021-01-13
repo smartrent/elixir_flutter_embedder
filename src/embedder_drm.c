@@ -39,6 +39,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dlfcn.h>
 
 #include "flutter_embedder.h"
 #include "debug.h"
@@ -130,17 +131,6 @@ static struct {
                                                     const EGLint *attrib_list);
 } egl = {0};
 
-static struct {
-    char asset_bundle_path[240];
-    char kernel_blob_path[256];
-    char executable_path[256];
-    char icu_data_path[256];
-    FlutterRendererConfig renderer_config;
-    FlutterProjectArgs args;
-    int engine_argc;
-    const char *const *engine_argv;
-} flutter = {0};
-
 // position & pointer phase of a mouse pointer / multitouch slot
 // A 10-finger multi-touch display has 10 slots and each of them have their own position, tracking id, etc.
 // All mouses / touchpads share the same mouse pointer.
@@ -171,35 +161,16 @@ static struct engine_task *tasklist = NULL;
 static pthread_mutex_t tasklist_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  task_added = PTHREAD_COND_INITIALIZER;
 
+// There is probably a better way to do this.
 extern FlutterEngine engine;
 static _Atomic bool  engine_running = false;
 
-static void post_platform_task(struct engine_task *task);
-
-static bool make_current(void *userdata)
-{
-    if (eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context) != EGL_TRUE) {
-        debug("make_current: could not make the context current.");
-        return false;
-    }
-
-    return true;
-}
-
-static bool clear_current(void *userdata)
-{
-    if (eglMakeCurrent(egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) != EGL_TRUE) {
-        debug("clear_current: could not clear the current context.");
-        return false;
-    }
-
-    return true;
-}
+static void _post_platform_task(struct engine_task *);
 
 static void pageflip_handler(int fd, unsigned int frame, unsigned int sec, unsigned int usec, void *userdata)
 {
     FlutterEngineTraceEventInstant("pageflip");
-    post_platform_task(&(struct engine_task) {
+    _post_platform_task(&(struct engine_task) {
         .type = kVBlankReply,
         .target_time = 0,
         .vblank_ns = sec * 1000000000ull + usec * 1000ull,
@@ -279,179 +250,6 @@ static struct drm_fb *drm_fb_get_from_bo(struct gbm_bo *bo)
     return fb;
 }
 
-static bool present(void *userdata)
-{
-    FlutterEngineTraceEventDurationBegin("present");
-
-    eglSwapBuffers(egl.display, egl.surface);
-    struct gbm_bo *next_bo = gbm_surface_lock_front_buffer(gbm.surface);
-    struct drm_fb *fb = drm_fb_get_from_bo(next_bo);
-
-    int ok = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id, DRM_MODE_PAGE_FLIP_EVENT, NULL);
-    if (ok) {
-        perror("failed to queue page flip");
-        return false;
-    }
-
-    gbm_surface_release_buffer(gbm.surface, drm.previous_bo);
-    drm.previous_bo = next_bo;
-
-    FlutterEngineTraceEventDurationEnd("present");
-
-    return true;
-}
-
-static uint32_t fbo_callback(void *userdata)
-{
-    return 0;
-}
-
-static void cut_word_from_string(char *string, char *word)
-{
-    size_t word_length = strlen(word);
-    char  *word_in_str = strstr(string, word);
-
-    // check if the given word is surrounded by spaces in the string
-    if (word_in_str
-            && ((word_in_str == string) || (word_in_str[-1] == ' '))
-            && ((word_in_str[word_length] == 0) || (word_in_str[word_length] == ' '))
-       ) {
-        if (word_in_str[word_length] == ' ') word_length++;
-
-        int i = 0;
-        do {
-            word_in_str[i] = word_in_str[i + word_length];
-        } while (word_in_str[i++ + word_length] != 0);
-    }
-}
-
-static const GLubyte *hacked_glGetString(GLenum name)
-{
-    static GLubyte *extensions = NULL;
-
-    if (name != GL_EXTENSIONS)
-        return glGetString(name);
-
-    if (extensions == NULL) {
-        GLubyte *orig_extensions = (GLubyte *) glGetString(GL_EXTENSIONS);
-
-        extensions = malloc(strlen((const char *)orig_extensions) + 1);
-        if (!extensions) {
-            debug("Could not allocate memory for modified GL_EXTENSIONS string");
-            return NULL;
-        }
-
-        strcpy((char *)extensions, (const char *)orig_extensions);
-
-        /*
-            * working (apparently)
-            */
-        //cut_word_from_string(extensions, "GL_EXT_blend_minmax");
-        //cut_word_from_string(extensions, "GL_EXT_multi_draw_arrays");
-        //cut_word_from_string(extensions, "GL_EXT_texture_format_BGRA8888");
-        //cut_word_from_string(extensions, "GL_OES_compressed_ETC1_RGB8_texture");
-        //cut_word_from_string(extensions, "GL_OES_depth24");
-        //cut_word_from_string(extensions, "GL_OES_texture_npot");
-        //cut_word_from_string(extensions, "GL_OES_vertex_half_float");
-        //cut_word_from_string(extensions, "GL_OES_EGL_image");
-        //cut_word_from_string(extensions, "GL_OES_depth_texture");
-        //cut_word_from_string(extensions, "GL_AMD_performance_monitor");
-        //cut_word_from_string(extensions, "GL_OES_EGL_image_external");
-        //cut_word_from_string(extensions, "GL_EXT_occlusion_query_boolean");
-        //cut_word_from_string(extensions, "GL_KHR_texture_compression_astc_ldr");
-        //cut_word_from_string(extensions, "GL_EXT_compressed_ETC1_RGB8_sub_texture");
-        //cut_word_from_string(extensions, "GL_EXT_draw_elements_base_vertex");
-        //cut_word_from_string(extensions, "GL_EXT_texture_border_clamp");
-        //cut_word_from_string(extensions, "GL_OES_draw_elements_base_vertex");
-        //cut_word_from_string(extensions, "GL_OES_texture_border_clamp");
-        //cut_word_from_string(extensions, "GL_KHR_texture_compression_astc_sliced_3d");
-        //cut_word_from_string(extensions, "GL_MESA_tile_raster_order");
-
-        /*
-        * should be working, but isn't
-        */
-        cut_word_from_string((char *)extensions, "GL_EXT_map_buffer_range");
-
-        /*
-        * definitely broken
-        */
-        cut_word_from_string((char *)extensions, "GL_OES_element_index_uint");
-        cut_word_from_string((char *)extensions, "GL_OES_fbo_render_mipmap");
-        cut_word_from_string((char *)extensions, "GL_OES_mapbuffer");
-        cut_word_from_string((char *)extensions, "GL_OES_rgb8_rgba8");
-        cut_word_from_string((char *)extensions, "GL_OES_stencil8");
-        cut_word_from_string((char *)extensions, "GL_OES_texture_3D");
-        cut_word_from_string((char *)extensions, "GL_OES_packed_depth_stencil");
-        cut_word_from_string((char *)extensions, "GL_OES_get_program_binary");
-        cut_word_from_string((char *)extensions, "GL_APPLE_texture_max_level");
-        cut_word_from_string((char *)extensions, "GL_EXT_discard_framebuffer");
-        cut_word_from_string((char *)extensions, "GL_EXT_read_format_bgra");
-        cut_word_from_string((char *)extensions, "GL_EXT_frag_depth");
-        cut_word_from_string((char *)extensions, "GL_NV_fbo_color_attachments");
-        cut_word_from_string((char *)extensions, "GL_OES_EGL_sync");
-        cut_word_from_string((char *)extensions, "GL_OES_vertex_array_object");
-        cut_word_from_string((char *)extensions, "GL_EXT_unpack_subimage");
-        cut_word_from_string((char *)extensions, "GL_NV_draw_buffers");
-        cut_word_from_string((char *)extensions, "GL_NV_read_buffer");
-        cut_word_from_string((char *)extensions, "GL_NV_read_depth");
-        cut_word_from_string((char *)extensions, "GL_NV_read_depth_stencil");
-        cut_word_from_string((char *)extensions, "GL_NV_read_stencil");
-        cut_word_from_string((char *)extensions, "GL_EXT_draw_buffers");
-        cut_word_from_string((char *)extensions, "GL_KHR_debug");
-        cut_word_from_string((char *)extensions, "GL_OES_required_internalformat");
-        cut_word_from_string((char *)extensions, "GL_OES_surfaceless_context");
-        cut_word_from_string((char *)extensions, "GL_EXT_separate_shader_objects");
-        cut_word_from_string((char *)extensions, "GL_KHR_context_flush_control");
-        cut_word_from_string((char *)extensions, "GL_KHR_no_error");
-        cut_word_from_string((char *)extensions, "GL_KHR_parallel_shader_compile");
-    }
-
-    return extensions;
-}
-
-static void *proc_resolver(void *userdata, const char *name)
-{
-    static int is_VC4 = -1;
-    void      *address;
-
-    /*
-     * The mesa V3D driver reports some OpenGL ES extensions as supported and working
-     * even though they aren't. hacked_glGetString is a workaround for this, which will
-     * cut out the non-working extensions from the list of supported extensions.
-     */
-
-    if (name == NULL)
-        return NULL;
-
-    // first detect if we're running on a VideoCore 4 / using the VC4 driver.
-    if ((is_VC4 == -1) && (is_VC4 = strcmp(egl.renderer, "VC4 V3D 2.1") == 0))
-        printf( "detected VideoCore IV as underlying graphics chip, and VC4 as the driver.\n"
-                "Reporting modified GL_EXTENSIONS string that doesn't contain non-working extensions.");
-
-    // if we do, and the symbol to resolve is glGetString, we return our hacked_glGetString.
-    if (is_VC4 && (strcmp(name, "glGetString") == 0))
-        return hacked_glGetString;
-
-    if ((address = dlsym(RTLD_DEFAULT, name)) || (address = eglGetProcAddress(name)))
-        return address;
-
-    debug("proc_resolver: could not resolve symbol \"%s\"\n", name);
-
-    return NULL;
-}
-
-static void vsync_callback(void *userdata, intptr_t baton)
-{
-    post_platform_task(&(struct engine_task) {
-        .type = kVBlankRequest,
-        .target_time = 0,
-        .baton = baton
-    });
-}
-
-/************************
- * PLATFORM TASK-RUNNER *
- ************************/
 static size_t init_message_loop()
 {
     platform_thread_id = pthread_self();
@@ -513,45 +311,6 @@ static bool run_message_loop(void)
     }
 
     return true;
-}
-
-static void post_platform_task(struct engine_task *task)
-{
-    struct engine_task *to_insert = malloc(sizeof(struct engine_task));
-    if (!to_insert) return;
-
-    memcpy(to_insert, task, sizeof(struct engine_task));
-    pthread_mutex_lock(&tasklist_lock);
-    if (tasklist == NULL || to_insert->target_time < tasklist->target_time) {
-        to_insert->next = tasklist;
-        tasklist = to_insert;
-    } else {
-        struct engine_task *prev = tasklist;
-        struct engine_task *current = tasklist->next;
-        while (current != NULL && to_insert->target_time > current->target_time) {
-            prev = current;
-            current = current->next;
-        }
-        to_insert->next = current;
-        prev->next = to_insert;
-    }
-
-    pthread_mutex_unlock(&tasklist_lock);
-    pthread_cond_signal(&task_added);
-}
-
-static void flutter_post_platform_task(FlutterTask task, uint64_t target_time, void *userdata)
-{
-    post_platform_task(&(struct engine_task) {
-        .type = kFlutterTask,
-        .task = task,
-        .target_time = target_time
-    });
-}
-
-static bool runs_platform_tasks_on_current_thread(void *userdata)
-{
-    return pthread_equal(pthread_self(), platform_thread_id) != 0;
 }
 
 static size_t init_display(void)
@@ -804,7 +563,7 @@ static size_t init_display(void)
      **********************/
     debug("Creating GBM device");
     gbm.device = gbm_create_device(drm.fd);
-    gbm.format = DRM_FORMAT_RGB565;
+    gbm.format = DRM_FORMAT_XRGB8888;
     gbm.surface = NULL;
     gbm.modifier = DRM_FORMAT_MOD_LINEAR;
 
@@ -835,15 +594,15 @@ static size_t init_display(void)
     };
 
     const EGLint config_attribs[] = {
-        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-        EGL_RED_SIZE, 1,
-        EGL_GREEN_SIZE, 1,
-        EGL_BLUE_SIZE, 1,
-        EGL_ALPHA_SIZE, 0,
+        EGL_RED_SIZE,8,
+        EGL_GREEN_SIZE,8,
+        EGL_BLUE_SIZE,8,
+        EGL_ALPHA_SIZE,8,
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
         EGL_SAMPLES, 0,
-        EGL_NONE
+        EGL_NONE,
     };
+
 
     const char *egl_exts_client, *egl_exts_dpy, *gl_exts;
 
@@ -885,7 +644,6 @@ static size_t init_display(void)
         debug("failed to bind OpenGL ES API");
         return -1;
     }
-
 
     debug("Choosing EGL config...");
     EGLint count = 0, matched = 0;
@@ -930,8 +688,10 @@ static size_t init_display(void)
     free(configs);
 
     if (!_found_matching_config) {
-        debug("Could not find context with appropriate attributes and matching native visual ID.");
-        return -1;
+        error("Could not find context with appropriate attributes and matching native visual ID.");
+        gbm.format = DRM_FORMAT_XRGB8888;
+        egl.config = config_attribs[0];
+        // return -1;
     }
 
     debug("Creating EGL context...");
@@ -1004,54 +764,6 @@ static size_t init_display(void)
 
     debug("finished display setup!");
 
-    return 0;
-}
-
-static size_t run_flutter(FlutterProjectArgs *args)
-{
-    // configure flutter rendering
-    flutter.renderer_config.type = kOpenGL;
-    flutter.renderer_config.open_gl.struct_size     = sizeof(flutter.renderer_config.open_gl);
-    flutter.renderer_config.open_gl.make_current    = make_current;
-    flutter.renderer_config.open_gl.clear_current   = clear_current;
-    flutter.renderer_config.open_gl.present         = present;
-    flutter.renderer_config.open_gl.fbo_callback    = fbo_callback;
-    flutter.renderer_config.open_gl.gl_proc_resolver = proc_resolver;
-    flutter.renderer_config.open_gl.surface_transformation = NULL;
-
-    // configure flutter
-    args->vsync_callback = vsync_callback; // See flutter-pi fix if display driver doesn't provide vblank timestamps
-    flutter.args.custom_task_runners        = &(FlutterCustomTaskRunners) {
-        .struct_size = sizeof(FlutterCustomTaskRunners),
-        .platform_task_runner = &(FlutterTaskRunnerDescription) {
-            .struct_size = sizeof(FlutterTaskRunnerDescription),
-            .user_data = NULL,
-            .runs_task_on_current_thread_callback = &runs_platform_tasks_on_current_thread,
-            .post_task_callback = &flutter_post_platform_task
-        }
-    };
-
-    // spin up the engine
-    FlutterEngineResult _result = FlutterEngineRun(FLUTTER_ENGINE_VERSION, &flutter.renderer_config, args, NULL, &engine);
-    if (_result != kSuccess) {
-        debug("Could not run the flutter engine");
-        return -1;
-    }
-
-    engine_running = true;
-
-    // update window size
-    int ok = FlutterEngineSendWindowMetricsEvent(
-                 engine,
-    &(FlutterWindowMetricsEvent) {
-        .struct_size = sizeof(FlutterWindowMetricsEvent), .width = width, .height = height, .pixel_ratio = pixel_ratio
-    }
-             );
-
-    if (ok != kSuccess) {
-        debug("Could not update Flutter application size.");
-        return -1;
-    }
     return 0;
 }
 
@@ -1204,10 +916,79 @@ static size_t run_io_thread()
 
     return 0;
 }
+ 
+bool gfx_make_current(void *userdata)
+{
+    if (eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context) != EGL_TRUE) {
+        debug("make_current: could not make the context current.");
+        return false;
+    }
+
+    return true;
+}
+
+bool gfx_clear_current(void *userdata)
+{
+    if (eglMakeCurrent(egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) != EGL_TRUE) {
+        debug("clear_current: could not clear the current context.");
+        return false;
+    }
+
+    return true;
+}
+
+bool gfx_present(void *userdata)
+{
+    FlutterEngineTraceEventDurationBegin("present");
+
+    eglSwapBuffers(egl.display, egl.surface);
+    struct gbm_bo *next_bo = gbm_surface_lock_front_buffer(gbm.surface);
+    struct drm_fb *fb = drm_fb_get_from_bo(next_bo);
+
+    int ok = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id, DRM_MODE_PAGE_FLIP_EVENT, NULL);
+    if (ok) {
+        perror("failed to queue page flip");
+        return false;
+    }
+
+    gbm_surface_release_buffer(gbm.surface, drm.previous_bo);
+    drm.previous_bo = next_bo;
+
+    FlutterEngineTraceEventDurationEnd("present");
+
+    return true;
+}
+
+uint32_t gfx_fbo_callback(void *userdata)
+{
+    return 0;
+}
+
+void gfx_vsync(void *userdata, intptr_t baton)
+{
+    _post_platform_task(&(struct engine_task) {
+        .type = kVBlankRequest,
+        .target_time = 0,
+        .baton = baton
+    });
+}
+
+void on_post_flutter_task(FlutterTask task, uint64_t target_time, void *userdata)
+{
+    _post_platform_task(&(struct engine_task) {
+        .type = kFlutterTask,
+        .task = task,
+        .target_time = target_time
+    });
+}
+
+bool runs_platform_tasks_on_current_thread(void *userdata)
+{
+    return pthread_equal(pthread_self(), platform_thread_id) != 0;
+}
 
 size_t gfx_init(FlutterProjectArgs* args)
 {
-
     debug("initializing init_message_loop...");
     if (init_message_loop() < 0) {
         error("init_message_loop");
@@ -1218,12 +999,6 @@ size_t gfx_init(FlutterProjectArgs* args)
     debug("initializing display...");
     if (init_display() < 0) {
         error("init_display");
-        return EXIT_FAILURE;
-    }
-
-    debug("initializing flutter...");
-    if(run_flutter(args) < 0) {
-        error("run_flutter");
         return EXIT_FAILURE;
     }
 
@@ -1252,4 +1027,163 @@ void gfx_loop()
 void gfx_terminate(void)
 {
     debug("gfx_terminate not yet implemented");
+}
+
+static void _post_platform_task(struct engine_task *task)
+{
+    struct engine_task *to_insert = malloc(sizeof(struct engine_task));
+    if (!to_insert) return;
+
+    memcpy(to_insert, task, sizeof(struct engine_task));
+    pthread_mutex_lock(&tasklist_lock);
+    if (tasklist == NULL || to_insert->target_time < tasklist->target_time) {
+        to_insert->next = tasklist;
+        tasklist = to_insert;
+    } else {
+        struct engine_task *prev = tasklist;
+        struct engine_task *current = tasklist->next;
+        while (current != NULL && to_insert->target_time > current->target_time) {
+            prev = current;
+            current = current->next;
+        }
+        to_insert->next = current;
+        prev->next = to_insert;
+    }
+
+    pthread_mutex_unlock(&tasklist_lock);
+    pthread_cond_signal(&task_added);
+}
+
+static void _cut_word_from_string(char *string, char *word)
+{
+    size_t word_length = strlen(word);
+    char  *word_in_str = strstr(string, word);
+
+    // check if the given word is surrounded by spaces in the string
+    if (word_in_str
+            && ((word_in_str == string) || (word_in_str[-1] == ' '))
+            && ((word_in_str[word_length] == 0) || (word_in_str[word_length] == ' '))
+       ) {
+        if (word_in_str[word_length] == ' ') word_length++;
+
+        int i = 0;
+        do {
+            word_in_str[i] = word_in_str[i + word_length];
+        } while (word_in_str[i++ + word_length] != 0);
+    }
+}
+
+static const GLubyte *_hacked_glGetString(GLenum name)
+{
+    static GLubyte *extensions = NULL;
+
+    if (name != GL_EXTENSIONS)
+        return glGetString(name);
+
+    if (extensions == NULL) {
+        GLubyte *orig_extensions = (GLubyte *) glGetString(GL_EXTENSIONS);
+
+        extensions = malloc(strlen((const char *)orig_extensions) + 1);
+        if (!extensions) {
+            debug("Could not allocate memory for modified GL_EXTENSIONS string");
+            return NULL;
+        }
+
+        strcpy((char *)extensions, (const char *)orig_extensions);
+
+        /*
+            * working (apparently)
+            */
+        //_cut_word_from_string(extensions, "GL_EXT_blend_minmax");
+        //_cut_word_from_string(extensions, "GL_EXT_multi_draw_arrays");
+        //_cut_word_from_string(extensions, "GL_EXT_texture_format_BGRA8888");
+        //_cut_word_from_string(extensions, "GL_OES_compressed_ETC1_RGB8_texture");
+        //_cut_word_from_string(extensions, "GL_OES_depth24");
+        //_cut_word_from_string(extensions, "GL_OES_texture_npot");
+        //_cut_word_from_string(extensions, "GL_OES_vertex_half_float");
+        //_cut_word_from_string(extensions, "GL_OES_EGL_image");
+        //_cut_word_from_string(extensions, "GL_OES_depth_texture");
+        //_cut_word_from_string(extensions, "GL_AMD_performance_monitor");
+        //_cut_word_from_string(extensions, "GL_OES_EGL_image_external");
+        //_cut_word_from_string(extensions, "GL_EXT_occlusion_query_boolean");
+        //_cut_word_from_string(extensions, "GL_KHR_texture_compression_astc_ldr");
+        //_cut_word_from_string(extensions, "GL_EXT_compressed_ETC1_RGB8_sub_texture");
+        //_cut_word_from_string(extensions, "GL_EXT_draw_elements_base_vertex");
+        //_cut_word_from_string(extensions, "GL_EXT_texture_border_clamp");
+        //_cut_word_from_string(extensions, "GL_OES_draw_elements_base_vertex");
+        //_cut_word_from_string(extensions, "GL_OES_texture_border_clamp");
+        //_cut_word_from_string(extensions, "GL_KHR_texture_compression_astc_sliced_3d");
+        //_cut_word_from_string(extensions, "GL_MESA_tile_raster_order");
+
+        /*
+        * should be working, but isn't
+        */
+        _cut_word_from_string((char *)extensions, "GL_EXT_map_buffer_range");
+
+        /*
+        * definitely broken
+        */
+        _cut_word_from_string((char *)extensions, "GL_OES_element_index_uint");
+        _cut_word_from_string((char *)extensions, "GL_OES_fbo_render_mipmap");
+        _cut_word_from_string((char *)extensions, "GL_OES_mapbuffer");
+        _cut_word_from_string((char *)extensions, "GL_OES_rgb8_rgba8");
+        _cut_word_from_string((char *)extensions, "GL_OES_stencil8");
+        _cut_word_from_string((char *)extensions, "GL_OES_texture_3D");
+        _cut_word_from_string((char *)extensions, "GL_OES_packed_depth_stencil");
+        _cut_word_from_string((char *)extensions, "GL_OES_get_program_binary");
+        _cut_word_from_string((char *)extensions, "GL_APPLE_texture_max_level");
+        _cut_word_from_string((char *)extensions, "GL_EXT_discard_framebuffer");
+        _cut_word_from_string((char *)extensions, "GL_EXT_read_format_bgra");
+        _cut_word_from_string((char *)extensions, "GL_EXT_frag_depth");
+        _cut_word_from_string((char *)extensions, "GL_NV_fbo_color_attachments");
+        _cut_word_from_string((char *)extensions, "GL_OES_EGL_sync");
+        _cut_word_from_string((char *)extensions, "GL_OES_vertex_array_object");
+        _cut_word_from_string((char *)extensions, "GL_EXT_unpack_subimage");
+        _cut_word_from_string((char *)extensions, "GL_NV_draw_buffers");
+        _cut_word_from_string((char *)extensions, "GL_NV_read_buffer");
+        _cut_word_from_string((char *)extensions, "GL_NV_read_depth");
+        _cut_word_from_string((char *)extensions, "GL_NV_read_depth_stencil");
+        _cut_word_from_string((char *)extensions, "GL_NV_read_stencil");
+        _cut_word_from_string((char *)extensions, "GL_EXT_draw_buffers");
+        _cut_word_from_string((char *)extensions, "GL_KHR_debug");
+        _cut_word_from_string((char *)extensions, "GL_OES_required_internalformat");
+        _cut_word_from_string((char *)extensions, "GL_OES_surfaceless_context");
+        _cut_word_from_string((char *)extensions, "GL_EXT_separate_shader_objects");
+        _cut_word_from_string((char *)extensions, "GL_KHR_context_flush_control");
+        _cut_word_from_string((char *)extensions, "GL_KHR_no_error");
+        _cut_word_from_string((char *)extensions, "GL_KHR_parallel_shader_compile");
+    }
+
+    return extensions;
+}
+
+void *proc_resolver(void *userdata, const char *name)
+{
+    static int is_VC4 = -1;
+    void      *address;
+
+    /*
+     * The mesa V3D driver reports some OpenGL ES extensions as supported and working
+     * even though they aren't. _hacked_glGetString is a workaround for this, which will
+     * cut out the non-working extensions from the list of supported extensions.
+     */
+
+    if (name == NULL)
+        return NULL;
+
+    // first detect if we're running on a VideoCore 4 / using the VC4 driver.
+    if ((is_VC4 == -1) && (is_VC4 = strcmp(egl.renderer, "VC4 V3D 2.1") == 0))
+        printf( "detected VideoCore IV as underlying graphics chip, and VC4 as the driver.\n"
+                "Reporting modified GL_EXTENSIONS string that doesn't contain non-working extensions.");
+
+    // if we do, and the symbol to resolve is glGetString, we return our _hacked_glGetString.
+    if (is_VC4 && (strcmp(name, "glGetString") == 0))
+        return _hacked_glGetString;
+
+    if ((address = dlsym(RTLD_DEFAULT, name)) || (address = eglGetProcAddress(name)))
+        return address;
+
+    debug("proc_resolver: could not resolve symbol \"%s\"\n", name);
+
+    return NULL;
 }

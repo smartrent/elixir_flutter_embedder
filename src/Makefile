@@ -9,7 +9,7 @@ SRC += embedder_glfw.c
 # glfw
 CFLAGS := -I/usr/include/GLFW/ -I/usr/include/GL/
 CFLAGS += -g -DDEBUG
-LDFLAGS := -L$(PREFIX) -lGLEW -lX11 -lGLU -lGL -lglfw -lflutter_engine -lpthread
+LDFLAGS := -L$(PREFIX) -lGLEW -lX11 -lGLU -lGL -lglfw -lflutter_engine -lpthread -ldl
 else
 # Crosscompiled build
 SRC += embedder_drm.c

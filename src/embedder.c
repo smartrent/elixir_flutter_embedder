@@ -30,13 +30,12 @@ static struct erlcmd handler;
 static struct pollfd fdset[3];
 static int num_pollfds = 3;
 static int capstdout[2];
-static char capstdoutbuffer[ERLCMD_BUF_SIZE];
+static unsigned char capstdoutbuffer[ERLCMD_BUF_SIZE];
 static pthread_t flutter_embedder_pollfd_thread;
 
 /** Called by erlcmd. */
 static void handle_from_elixir(const uint8_t *buffer, size_t length, void *cookie)
 {
-    (void *)cookie;
     plat_msg_process(&queue, engine, buffer, length);
 }
 
@@ -128,7 +127,7 @@ void *pollfd_thread_function(void *vargp)
             size_t r;
             r = plat_msg_dispatch_all(&queue, &handler);
             if (r < 0)
-                error("Failed to dispatch platform messages: %d", r);
+                error("Failed to dispatch platform messages: %ld", r);
         }
     }
 }
@@ -164,16 +163,49 @@ int main(int argc, const char *argv[])
     }
 
     FlutterProjectArgs args = {
-        .struct_size = sizeof(FlutterProjectArgs),
-        .assets_path = project_path,
-        .icu_data_path = icudtl_path,
-        .platform_message_callback = on_platform_message
+        .struct_size               = sizeof(FlutterProjectArgs),
+        .assets_path               = project_path,
+        .icu_data_path             = icudtl_path,
+        .platform_message_callback = on_platform_message,
+        .vsync_callback            = gfx_vsync
+    };
+    FlutterRendererConfig config = {
+        .type                     = kOpenGL,
+        .open_gl.struct_size      = sizeof(FlutterOpenGLRendererConfig),
+        .open_gl.make_current     = gfx_make_current,
+        .open_gl.clear_current    = gfx_clear_current,
+        .open_gl.present          = gfx_present,
+        .open_gl.fbo_callback     = gfx_fbo_callback,
+        .open_gl.gl_proc_resolver = proc_resolver
     };
 
-    if (gfx_init(&args) < 0) {
+    FlutterTaskRunnerDescription custom_task_runner_description = {
+        .struct_size = sizeof(FlutterTaskRunnerDescription),
+        .user_data = NULL,
+        .runs_task_on_current_thread_callback = runs_platform_tasks_on_current_thread,
+        .post_task_callback = on_post_flutter_task
+    };
+
+    FlutterCustomTaskRunners custom_task_runners = {
+        .struct_size = sizeof(FlutterCustomTaskRunners),
+        .platform_task_runner = &custom_task_runner_description
+    };
+
+    args.custom_task_runners = &custom_task_runners;
+
+    FlutterEngineResult result = FlutterEngineInitialize(FLUTTER_ENGINE_VERSION, &config, &args, NULL, &engine);
+    assert(result == kSuccess && engine != NULL);
+
+    debug("initializing gfx");
+    if (gfx_init(engine) < 0) {
         error("gfx");
         exit(EXIT_FAILURE);
     }
+    result = FlutterEngineRunInitialized(engine);
+    assert(result == kSuccess && engine != NULL);
+
+    // FlutterEngineResult result = FlutterEngineRun(FLUTTER_ENGINE_VERSION, &config, &args, NULL, engine);
+    debug("and here");
 
     if (pthread_create(&flutter_embedder_pollfd_thread,
                        NULL,
