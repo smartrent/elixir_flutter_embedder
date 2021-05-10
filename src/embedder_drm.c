@@ -161,7 +161,7 @@ static struct engine_task *tasklist = NULL;
 static pthread_mutex_t tasklist_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  task_added = PTHREAD_COND_INITIALIZER;
 
-FlutterEngine engine = NULL;
+extern FlutterEngine engine;
 static _Atomic bool  engine_running = false;
 
 static void _post_platform_task(struct engine_task *);
