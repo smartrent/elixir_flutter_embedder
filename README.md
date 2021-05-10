@@ -42,8 +42,8 @@ applications:
 mkdir flutter-nerves-helloworld
 cd flutter-nerves-helloworld
 # Create a new Nerves Project
-# currently, only rpi3 is supported.
-mix nerves.new firmware --target=rpi3
+# currently, only rpi4 is supported.
+mix nerves.new firmware --target=rpi4
 # Create a new flutter application
 flutter create ui
 ```
@@ -58,9 +58,7 @@ def deps do
   # ... ommited for clarity
   # Dependencies for specific targets
   # Add this line
-  {:flutter_embedder, "~> 0.0", targets: :rpi3}
-  # modify the `nerves_system_rpi3` line:
-  {:drm_system_rpi3, "~> 1.12", runtime: false, targets: :rpi3}
+  {:flutter_embedder, "~> 0.0", targets: :rpi4}
 end
 ```
 
@@ -82,7 +80,7 @@ def project do
 end
 
 # Create this function:
-def compilers(:rpi3), do: [:flutter | Mix.compilers()]
+def compilers(:rpi4), do: [:flutter | Mix.compilers()]
 def compilers(:host), do: Mix.compilers()
 ```
 
