@@ -26,3 +26,6 @@ flutter_embedder-*.tar
 build
 flutter_embedder.h
 *.zip
+*.orig
+*.txt
+/sample

@@ -24,12 +24,12 @@ defmodule FlutterEmbedder do
   @impl GenServer
   def init(args) do
     case sanity_check(args) do
-      {:ok, args} ->
-        Logger.info("#{port_executable()} #{Enum.join(args, " ")}")
+      {:ok, flutter_args} ->
+        Logger.info("flutter args: #{port_executable()} #{Enum.join(flutter_args, " ")}")
 
         port =
           Port.open({:spawn_executable, port_executable()}, [
-            {:args, args},
+            {:args, flutter_args},
             :binary,
             :exit_status,
             {:packet, 4},
@@ -38,7 +38,11 @@ defmodule FlutterEmbedder do
              [{'LD_LIBRARY_PATH', to_charlist(Application.app_dir(:flutter_embedder, ["priv"]))}]}
           ])
 
-        {:ok, %__MODULE__{port: port, module: FlutterEmbedder.StubMethodCallHandler}}
+        {:ok,
+         %__MODULE__{
+           port: port,
+           module: args[:method_call_handler] || FlutterEmbedder.StubMethodCallHandler
+         }}
     end
   end
 
@@ -52,13 +56,13 @@ defmodule FlutterEmbedder do
   end
 
   def handle_info({port, {:data, <<1, _::32, log::binary>>}}, %{port: port} = state) do
-    IO.inspect(log, label: "LOG")
-    # Logger.info(log)
+    Logger.info(log)
+
     case log do
-      "flutter: Observatory listening on " <> uri ->
+      "lutter: Observatory listening on " <> uri ->
         uri = URI.parse(String.trim(uri))
         state = %{state | uri: uri}
-        Logger.info "flutter: Observatory listening on #{uri}"
+        Logger.info("flutter: Observatory listening on #{uri}")
         {:noreply, state}
 
       _ ->
@@ -68,14 +72,16 @@ defmodule FlutterEmbedder do
 
   def handle_info({port, {:data, <<0, data::binary>>}}, %{port: port} = state) do
     platform_channel_message = PlatformChannelMessage.decode(data)
-    Logger.info("#{inspect(platform_channel_message)}")
+    # Logger.info("#{inspect(platform_channel_message)}")
 
     case StandardMethodCall.decode(platform_channel_message) do
       {:ok, call} ->
         handle_standard_call(platform_channel_message, call, state)
 
       {:error, reason} ->
-        Logger.error("Could not decode data as StandardMethodCall: #{reason}")
+        Logger.error(
+          "Could not decode #{platform_channel_message.channel} message as StandardMethodCall: #{reason} (this is probably ok)"
+        )
 
         reply_bin =
           PlatformChannelMessage.encode_response(platform_channel_message, :not_implemented)
@@ -90,10 +96,12 @@ defmodule FlutterEmbedder do
         %StandardMethodCall{method: method, args: args},
         state
       ) do
-    case state.module.handle_std_call(channel, method, args) do
+    case state.module.handle_std_call(channel, method, args) |> IO.inspect(label: "reply") do
       {:ok, value} when is_valid_dart_value(value) ->
         value_ = StandardMessageCodec.encode_value(value)
+
         reply_bin = PlatformChannelMessage.encode_response(call, {:ok, value_})
+
         true = Port.command(state.port, reply_bin)
 
       {:error, code, message, value} ->
@@ -125,7 +133,18 @@ defmodule FlutterEmbedder do
     icudtl_file =
       args[:icudtl_file] || Application.app_dir(:flutter_embedder, ["priv", "icudtl.dat"])
 
-    {:ok, ["#{flutter_assets}", "#{icudtl_file}"]}
+    {:ok,
+     [
+       "#{flutter_assets}",
+       "#{icudtl_file}",
+       "--disable-service-auth-codes",
+       "--observatory-host",
+       "0.0.0.0",
+       "--observatory-port",
+       "43403",
+       "--disable-service-auth-codes",
+       "--enable-service-port-fallback"
+     ]}
   end
 
   @doc false

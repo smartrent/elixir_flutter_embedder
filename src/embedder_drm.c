@@ -20,6 +20,7 @@
 #include <assert.h>
 #include <time.h>
 #include <poll.h>
+#include <sys/eventfd.h>
 
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -41,11 +42,13 @@
 #include <string.h>
 
 #include "flutter_embedder.h"
+#include "flutter_embedder.h"
+#include "embedder_platform_message.h"
 
 #define DEBUG
 
 #ifdef DEBUG
-// #define LOG_PATH "/tmp/log.txt"
+#define LOG_PATH "/tmp/log.txt"
 #define log_location stderr
 #define debug(...) do { fprintf(log_location, __VA_ARGS__); fprintf(log_location, "\r\n"); fflush(log_location); } while(0)
 #define error(...) do { debug(__VA_ARGS__); } while (0)
@@ -193,6 +196,14 @@ static struct mousepointer_mtslot mousepointer;
 static pthread_t io_thread_id;
 #define MAX_EVENTS_PER_READ 64
 static struct input_event io_input_buffer[MAX_EVENTS_PER_READ];
+
+static plat_msg_queue_t queue;
+static struct erlcmd handler;
+static struct pollfd fdset[3];
+static int num_pollfds = 3;
+static int capstdout[2];
+static char stdmethodcallbuffer[ERLCMD_BUF_SIZE];
+static char capstdoutbuffer[ERLCMD_BUF_SIZE];
 
 static bool make_current(void *userdata)
 {
@@ -1056,6 +1067,15 @@ static void destroy_display(void)
     debug("destroy_display not yet implemented");
 }
 
+static void on_platform_message(
+    const FlutterPlatformMessage *message,
+    void *userdata
+)
+{
+    plat_msg_push(&queue, message);
+    eventfd_write(fdset[2].fd, 1);
+}
+
 static bool init_application(void)
 {
     // configure flutter rendering
@@ -1082,7 +1102,7 @@ static bool init_application(void)
     flutter.args.vm_snapshot_instructions   = NULL;
     flutter.args.command_line_argc          = flutter.engine_argc;
     flutter.args.command_line_argv          = flutter.engine_argv;
-    flutter.args.platform_message_callback  = NULL; // Not needed yet.
+    flutter.args.platform_message_callback  = on_platform_message; // Not needed yet.
     flutter.args.vsync_callback =
         vsync_callback; // See flutter-pi fix if display driver doesn't provide vblank timestamps
     flutter.args.custom_task_runners        = &(FlutterCustomTaskRunners) {
@@ -1282,6 +1302,54 @@ static bool run_io_thread(void)
     return true;
 }
 
+static void handle_from_elixir(const uint8_t *buffer, size_t length, void *cookie)
+{
+    plat_msg_process(&queue, engine, buffer, length);
+}
+
+void *myThreadFun(void *vargp)
+{
+    for (;;) {
+        for (int i = 0; i < num_pollfds; i++)
+            fdset[i].revents = 0;
+        int rc = poll(fdset, num_pollfds, 0);
+        if (rc < 0) {
+            // Retry if EINTR
+            if (errno == EINTR)
+                continue;
+            error("poll failed with %d", errno);
+        }
+
+        // Erlang closed the port
+        if (fdset[0].revents & POLLHUP)
+            exit(2);
+
+        // from elixir
+        if (fdset[0].revents & POLLIN)
+            erlcmd_process(&handler);
+
+        // Engine STDOUT
+        if (fdset[1].revents & POLLIN) {
+            memset(capstdoutbuffer, 0, ERLCMD_BUF_SIZE);
+            capstdoutbuffer[sizeof(uint32_t)] = 1;
+            size_t nbytes = read(fdset[1].fd, capstdoutbuffer + sizeof(uint32_t) + sizeof(uint32_t),
+                                 ERLCMD_BUF_SIZE - sizeof(uint32_t) - sizeof(uint32_t));
+            if (nbytes < 0)
+                error("Failed to read engine log buffer");
+            erlcmd_send(&handler, capstdoutbuffer, nbytes);
+        }
+
+        if (fdset[2].revents & (POLLIN | POLLHUP)) {
+            eventfd_t event;
+            eventfd_read(fdset[1].fd, &event);
+            size_t r;
+            r = plat_msg_dispatch_all(&queue, &handler);
+            if (r < 0)
+                error("Failed to dispatch platform messages: %d", r);
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
 
@@ -1299,9 +1367,42 @@ int main(int argc, char **argv)
     snprintf(flutter.asset_bundle_path, sizeof(flutter.asset_bundle_path), "%s", argv[1]);
     snprintf(flutter.icu_data_path, sizeof(flutter.icu_data_path), "%s", argv[2]);
 
-    argv[2] = argv[0];
-    flutter.engine_argc = argc - 2;
-    flutter.engine_argv = (const char *const *) & (argv[2]);
+    // argv[2] = argv[0];
+    flutter.engine_argc = argc - 3;
+    flutter.engine_argv = (const char *const *) & (argv[3]);
+    for(int i=0; i < flutter.engine_argc; i++) {
+        debug("engine argv[%d]: %s", i, flutter.engine_argv[i]);
+    }
+
+    int writefd = dup(STDOUT_FILENO);
+    int readfd = dup(STDIN_FILENO);
+    debug("using %d for erlcmd", writefd);
+
+    erlcmd_init(&handler, readfd, writefd, handle_from_elixir, NULL);
+    if (plat_msg_queue_init(&queue) < 0) {
+        error("plat_msg_init");
+        exit(EXIT_FAILURE);
+    }
+
+    // Initialize the file descriptor set for polling
+    memset(fdset, -1, sizeof(fdset));
+    fdset[0].fd = readfd;
+    fdset[0].events = POLLIN;
+    fdset[0].revents = 0;
+
+    if (pipe2(capstdout, O_NONBLOCK) < 0) {
+        error("pipe2");
+        error("plat_msg_init");
+    }
+
+    dup2(capstdout[1], STDOUT_FILENO);
+    fdset[1].fd = capstdout[0];
+    fdset[1].events = POLLIN;
+    fdset[1].revents = 0;
+
+    fdset[2].fd = eventfd(0, 0);
+    fdset[2].events = POLLIN;
+    fdset[2].revents = 0;
 
     // check if asset bundle path is valid
     if (!init_paths()) {
@@ -1333,6 +1434,9 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
+    pthread_t thread_id;
+    pthread_create(&thread_id, NULL, myThreadFun, NULL);
+
     // read input events
     debug("Running IO thread...");
     run_io_thread();
@@ -1342,6 +1446,8 @@ int main(int argc, char **argv)
     run_message_loop();
 
     // exit
+    pthread_join(thread_id, NULL);
+    plat_msg_queue_destroy(&queue);
     destroy_application();
     destroy_display();
 
