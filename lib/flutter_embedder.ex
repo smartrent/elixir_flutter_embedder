@@ -44,11 +44,6 @@ defmodule FlutterEmbedder do
 
   @impl true
   def terminate(_, state) do
-    if state.port do
-      Port.close(state.port)
-    end
-
-    remove_mdns_service(state)
   end
 
   @impl GenServer
@@ -63,7 +58,7 @@ defmodule FlutterEmbedder do
       "flutter: Observatory listening on " <> uri ->
         uri = URI.parse(String.trim(uri))
         state = %{state | uri: uri}
-        # add_mdns_service(state)
+        Logger.info "flutter: Observatory listening on #{uri}"
         {:noreply, state}
 
       _ ->
@@ -147,23 +142,5 @@ defmodule FlutterEmbedder do
 
     Logger.info("Using #{exe} for flutter_embedder")
     exe
-  end
-
-  def add_mdns_service(%{uri: uri}) do
-    services = [
-      %{
-        name: "Flutter Observatory",
-        protocol: "dartobservatory",
-        transport: "tcp",
-        port: uri.port,
-        txt_payload: [URI.encode_query(%{path: uri.path, port: uri.port})]
-      }
-    ]
-
-    MdnsLite.add_mdns_services(services)
-  end
-
-  def remove_mdns_service(_state) do
-    MdnsLite.remove_mdns_services("Flutter Observatory")
   end
 end

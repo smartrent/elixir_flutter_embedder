@@ -1,6 +1,7 @@
 defmodule FlutterEmbedder.StubMethodCallHandler do
+  require Logger
   def handle_std_call(channel, method, args) do
-    IO.inspect({channel, method, args}, label: "unhandled method call")
+    Logger.debug "unhandled method call: #{inspect(channel)} #{inspect(method)} #{inspect(args)}"
     :not_implemented
   end
 end
