@@ -34,7 +34,8 @@ defmodule FlutterEmbedder.StandardMessageCodec do
                   is_float(value) or
                   is_boolean(value) or
                   is_map(value) or
-                  is_list(value)
+                  is_list(value) or
+                  is_nil(value)
 
   @spec encode_value(value()) :: binary()
   def encode_value(nil), do: <<@kStdNull>>

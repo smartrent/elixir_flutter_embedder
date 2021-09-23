@@ -1,5 +1,5 @@
 defmodule FlutterEmbedder do
-  @moduledoc File.read!("README.md")
+  # @moduledoc File.read!("README.md")
   alias FlutterEmbedder.{PlatformChannelMessage, StandardMessageCodec, StandardMethodCall}
   import StandardMessageCodec, only: [is_valid_dart_value: 1]
   defstruct [:port, :uri, :module]
@@ -17,8 +17,13 @@ defmodule FlutterEmbedder do
     }
   end
 
-  def start_link(args, opts \\ []) do
+  def start_link(args, opts \\ [name: __MODULE__]) do
     GenServer.start_link(__MODULE__, args, opts)
+  end
+
+  def send_platform_message(embedder \\ __MODULE__, channel, data)
+      when is_valid_dart_value(data) do
+    GenServer.cast(embedder, {:send_platform_message, channel, data})
   end
 
   @impl GenServer
@@ -26,6 +31,8 @@ defmodule FlutterEmbedder do
     case sanity_check(args) do
       {:ok, flutter_args} ->
         Logger.info("flutter args: #{port_executable()} #{Enum.join(flutter_args, " ")}")
+
+        # LD_LIBRARY_PATH=/srv/erlang/lib/flutter_embedder-0.1.0/priv/ /srv/erlang/lib/flutter_embedder-0.1.0/priv/flutter_embedder /srv/erlang/lib/firmware-0.1.0/priv/flutter_assets /srv/erlang/lib/flutter_embedder-0.1.0/priv/icudtl.dat --disable-service-auth-codes --observatory-host 0.0.0.0 --observatory-port 43403 --disable-service-auth-codes --enable-service-port-fallback
 
         port =
           Port.open({:spawn_executable, port_executable()}, [
@@ -52,17 +59,18 @@ defmodule FlutterEmbedder do
 
   @impl GenServer
   def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
-    {:stop, {:flutter_embedder_crash, status}, state}
+    # {:stop, {:flutter_embedder_crash, status}, state}
+    Logger.error("Flutter embedder crashed: #{status}")
+    {:noreply, state}
   end
 
-  def handle_info({port, {:data, <<1, _::32, log::binary>>}}, %{port: port} = state) do
+  def handle_info({port, {:data, <<1, log::binary>>}}, %{port: port} = state) do
     Logger.info(log)
 
     case log do
-      "lutter: Observatory listening on " <> uri ->
+      "flutter: Observatory listening on " <> uri ->
         uri = URI.parse(String.trim(uri))
         state = %{state | uri: uri}
-        Logger.info("flutter: Observatory listening on #{uri}")
         {:noreply, state}
 
       _ ->
@@ -70,12 +78,18 @@ defmodule FlutterEmbedder do
     end
   end
 
-  def handle_info({port, {:data, <<0, data::binary>>}}, %{port: port} = state) do
+  def handle_info({port, {:data, <<2, log::binary>>}}, %{port: port} = state) do
+    Logger.error(log)
+    {:noreply, state}
+  end
+
+  def handle_info({port, {:data, data}}, %{port: port} = state) do
     platform_channel_message = PlatformChannelMessage.decode(data)
-    # Logger.info("#{inspect(platform_channel_message)}")
+    Logger.info("incomming call #{inspect(platform_channel_message)}")
 
     case StandardMethodCall.decode(platform_channel_message) do
       {:ok, call} ->
+        Logger.info("handling call: #{inspect(call)}")
         handle_standard_call(platform_channel_message, call, state)
 
       {:error, reason} ->
@@ -89,6 +103,21 @@ defmodule FlutterEmbedder do
         true = Port.command(state.port, reply_bin)
         {:noreply, state}
     end
+  end
+
+  @impl GenServer
+  def handle_cast({:send_platform_message, channel, data}, state) do
+    message_bin =
+      %FlutterEmbedder.PlatformChannelMessage{
+        channel: channel,
+        type: 0x0,
+        message: <<0x0::8, FlutterEmbedder.StandardMessageCodec.encode_value(data)::binary>>,
+        cookie: 255
+      }
+      |> FlutterEmbedder.PlatformChannelMessage.encode()
+
+    true = Port.command(state.port, message_bin)
+    {:noreply, state}
   end
 
   def handle_standard_call(
@@ -117,6 +146,11 @@ defmodule FlutterEmbedder do
       :not_implemented ->
         reply_bin = PlatformChannelMessage.encode_response(call, :not_implemented)
         true = Port.command(state.port, reply_bin)
+
+      error ->
+        Logger.error(
+          "Failed to handle response from message handler: invalid value: #{inspect(error)}"
+        )
     end
 
     {:noreply, state}

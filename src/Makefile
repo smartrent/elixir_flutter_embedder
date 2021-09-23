@@ -1,7 +1,7 @@
 PREFIX = $(MIX_APP_PATH)/priv
 BUILD  = $(MIX_APP_PATH)/obj
 
-SRC = erlcmd.c embedder_platform_message.c
+SRC = erlcmd.c embedder_platform_message.c util.c
 
 ifeq ($(CROSSCOMPILE),)
 # Not Crosscompiled build

@@ -28,8 +28,9 @@
  * The buffer needs to be large enough to hold the biggest individual
  * message from Erlang.
  */
-#define ERLCMD_BUF_SIZE (8192)
-struct erlcmd {
+#define ERLCMD_BUF_SIZE (16384)
+struct erlcmd
+{
     uint8_t buffer[ERLCMD_BUF_SIZE];
     size_t index;
 

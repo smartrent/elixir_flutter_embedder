@@ -1,8 +1,19 @@
 #include <pthread.h>
 #include <string.h>
+#include "util.h"
 #include "erlcmd.h"
 #include "embedder_platform_message.h"
 #include "flutter_embedder.h"
+
+#ifdef DEBUG
+#define LOG_PATH "/tmp/log.txt"
+#define log_location stderr
+#define debug(...) do { fprintf(log_location, __VA_ARGS__); fprintf(log_location, "\r\n"); fflush(log_location); } while(0)
+#define error(...) do { debug(__VA_ARGS__); } while (0)
+#else
+#define debug(...)
+#define error(...) do { fprintf(stderr, __VA_ARGS__); fprintf(stderr, ""); } while(0)
+#endif
 
 /**
  * Initialize queue and pthread lock
@@ -68,16 +79,18 @@ void plat_msg_process(plat_msg_queue_t *queue,
     // having to track current, previous and head all at the same time
     // https://codereview.stackexchange.com/posts/539/revisions
     for (plat_msg_container_t **current = &queue->messages; *current; current = &(*current)->next) {
-        if ((*current)->cookie == buffer[sizeof(uint32_t)]) {
+        if ((*current)->cookie == buffer[sizeof(uint32_t)+1]) {
+
             // I have no idea if this is correct. there are little docs for it.
             // What docs to exist say `FlutterEngineSendPlatformMessageResponse` must ALWAYS
             // be called, but i'm not really sure what to call it with if the
             // platform message has no response.
             // FlutterPi doesn't call anything if there's no listener.
-            FlutterEngineSendPlatformMessageResponse(engine,
-                                                     (*current)->response_handle,
-                                                     buffer + sizeof(uint32_t) +1,
-                                                     length - sizeof(uint8_t));
+            if(!(length <= 4))
+                FlutterEngineSendPlatformMessageResponse(engine,
+                                                        (*current)->response_handle,
+                                                        buffer + sizeof(uint32_t) +1+1,
+                                                        length - 2);
             plat_msg_container_t *next = (*current)->next;
             free((uint8_t *)(*current)->message);
             free((char *)(*current)->channel);
@@ -134,6 +147,7 @@ size_t plat_msg_dispatch(plat_msg_container_t *container, struct erlcmd *handler
 
     memset(buffer, 0, buffer_length);
 
+    // request type
     buffer[sizeof(uint32_t)] = 0x0;
     buffer[sizeof(uint32_t) +1] = container->cookie;
     memcpy(buffer + sizeof(uint32_t) +2, &container->channel_size, sizeof(uint16_t));
