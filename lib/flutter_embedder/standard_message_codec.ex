@@ -4,7 +4,11 @@ defmodule FlutterEmbedder.StandardMessageCodec do
   @kStdFalse 2
   @kStdInt32 3
   @kStdInt64 4
-  # @kStdLargeInt 5 # not used?
+
+  # we don't need largint?
+  # https://github.com/flutter/flutter/blob/841beff5204ebff30b297cf6d4342b6b6db1bb39/packages/flutter/lib/src/services/message_codecs.dart#L359-L365
+  # @kStdLargeInt 5
+
   @kStdFloat64 6
   @kStdString 7
   @kStdUInt8Array 8
@@ -38,8 +42,6 @@ defmodule FlutterEmbedder.StandardMessageCodec do
                   is_nil(value)
 
   defmodule Buffer do
-    require Logger
-
     def new() do
       <<>>
     end
@@ -79,11 +81,8 @@ defmodule FlutterEmbedder.StandardMessageCodec do
 
     def align_to(buffer, alignment) do
       mod = mod(byte_size(buffer) + 1, alignment)
-      Logger.info(%{mod: mod, alignment: alignment, size: byte_size(buffer)})
-
       if mod != 0 do
         pad = alignment - mod
-        Logger.info(%{pad: pad})
         buffer <> <<0::size(pad)-unit(8)>>
       else
         buffer
@@ -107,14 +106,12 @@ defmodule FlutterEmbedder.StandardMessageCodec do
     end
   end
 
-  require Logger
   @spec encode_value(value()) :: binary()
   def encode_value(value) do
-    r = write_value(value, Buffer.new())
-    Logger.debug(%{value => r})
-    r
+    write_value(value, Buffer.new())
   end
 
+  # https://github.com/flutter/flutter/blob/841beff5204ebff30b297cf6d4342b6b6db1bb39/packages/flutter/lib/src/services/message_codecs.dart#L366
   def write_value(value, buffer) do
     cond do
       is_nil(value) ->
@@ -167,7 +164,6 @@ defmodule FlutterEmbedder.StandardMessageCodec do
             end).()
 
       true ->
-        Logger.error("Encoder failed: #{inspect(value)}")
         raise ArgumentError, value: value
     end
   end
