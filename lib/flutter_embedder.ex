@@ -26,6 +26,10 @@ defmodule FlutterEmbedder do
     GenServer.cast(embedder, {:send_platform_message, channel, data})
   end
 
+  def observatory_url(embedder \\ __MODULE__) do
+    GenServer.call(embedder, :observatory_url)
+  end
+
   @impl GenServer
   def init(args) do
     case sanity_check(args) do
@@ -118,6 +122,11 @@ defmodule FlutterEmbedder do
 
     true = Port.command(state.port, message_bin)
     {:noreply, state}
+  end
+
+  @impl GenServer
+  def handle_call(:observatory_url, _from, state) do
+    {:reply, state.uri, state}
   end
 
   def handle_standard_call(
